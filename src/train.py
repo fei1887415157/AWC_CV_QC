@@ -6,15 +6,21 @@ from ultralytics import YOLO
 
 # Load a model
 model = YOLO("yolo12n-cls.yaml")  # build a new model from YAML
-#model = YOLO("YOLO11n-cls.pt")  # load a pretrained model (recommended for training)
+#model = YOLO("yolo11n-cls.pt")  # load a pretrained model (recommended for training)
 #model = YOLO("yolo11n-cls.yaml").load("yolo11n-cls.pt")  # build from YAML and transfer weights
 
 
 
-# image resolution: 4000 * 1638
-
 # Train the model
-results = model.train(data="C:/Users/fei18/PycharmProjects/AWC_CV_QC/dataset",
-                      epochs=50,
-                      imgsz=[4000/4, 1638/4])
-
+if __name__ == '__main__':
+	# original fake resolution: 4000 * 1638
+	# original real resolution: 1000 * 410
+	# optimized resolution (naked eye): 500 * 205
+	results = model.train(data = "F:/JetBrains/PycharmProjects/AWC_CV_QC/dataset",
+	                      pretrained = False,
+	                      epochs = 1000,
+	                      patience = 50,
+	                      imgsz = [1000, 410],
+	                      workers = 7,          # CPU intensive
+	                      batch = 128           # GPU VRAM intensive
+	                      )
