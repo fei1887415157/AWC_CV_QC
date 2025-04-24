@@ -7,20 +7,20 @@ import numpy as np # Import numpy for array operations
 import traceback # For detailed error printing
 
 # --- Global Configuration ---
-# Define constants at the top level
 MODEL_PATH = "runs/classify/train5/weights/best.pt" # Path to your trained .pt model
 CAMERA_ID = 0 # Change if you have multiple cameras
 REQUESTED_WIDTH = 1920 # Desired camera width
 REQUESTED_HEIGHT = 1080 # Desired camera height
 ZOOM_FACTOR = 2.0 # Set desired zoom factor (1.0 = no zoom, 2.0 = 2x zoom)
 TARGET_ASPECT_RATIO = 22 / 9 # Define the target aspect ratio (22:9)
+MANUAL_EXPOSURE_VALUE = -6 # <<<--- EXPERIMENT WITH THIS VALUE (e.g., -4, -5, -7, -8)
 # ---
 
 class NameTagQualityControl:
     def __init__(self, model_path, camera_id=0, zoom_factor=2.0):
         """
         Initializes the NameTagQualityControl class. Attempts to set camera
-        resolution and adjust auto-exposure mode before proceeding.
+        resolution and sets manual exposure mode.
 
         Args:
             model_path (str): Path to the trained YOLO classification model.
@@ -40,7 +40,6 @@ class NameTagQualityControl:
         set_h = self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, REQUESTED_HEIGHT)
 
         # --- Verify the actual resolution set ---
-        # It's good practice to wait briefly after setting properties
         time.sleep(0.2)
         actual_width = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -51,42 +50,32 @@ class NameTagQualityControl:
              print(f"Actual camera resolution is: {actual_width}x{actual_height}")
         # ---
 
-        # --- Attempt to adjust Auto Exposure Mode ---
-        # Direct metering control isn't standard. We try to influence behavior.
-        # Mode 1 often corresponds to 'Aperture Priority' which might help.
-        # Mode 0 usually means 'Manual Exposure'.
-        # The default is often 3 ('Auto Exposure').
-        print("Attempting to set Auto Exposure mode (e.g., Aperture Priority)...")
-        # Value '1' = Auto mode, Value '0' = Manual mode
-        # Setting to 1 might let camera adjust gain/shutter based on aperture, potentially better for varying light
-        set_auto_exposure = self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+        # --- Set Manual Exposure Mode ---
+        print("Attempting to set Manual Exposure mode...")
+        # Value '0' = Manual mode, '1' = Auto mode, '3' = Aperture Priority (often)
+        set_manual_exposure = self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
         time.sleep(0.2) # Allow time for setting to apply
         current_auto_exposure = self.camera.get(cv2.CAP_PROP_AUTO_EXPOSURE)
-        if set_auto_exposure:
-            print(f"Successfully requested Auto Exposure mode change. Current mode value: {current_auto_exposure}")
-            # Note: Getting the value back might not always reflect the mode accurately depending on driver.
-        else:
-            print(f"Warning: Could not set Auto Exposure mode. Current mode value: {current_auto_exposure}")
-            print("  Consider trying a different camera backend (e.g., cv2.CAP_DSHOW on Windows).")
 
-        # --- If setting Auto Exposure to 1 didn't work, you might need Manual (0) ---
-        # if current_auto_exposure != 1: # Or based on visual result
-        #     print("Attempting to set Manual Exposure mode...")
-        #     set_manual_exposure = self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
-        #     if set_manual_exposure:
-        #         print("Set to Manual Exposure mode. Now attempting to set exposure value.")
-        #         # Setting exposure requires experimentation! Range varies by camera.
-        #         # Negative values typically reduce exposure. Start around -5 or -6.
-        #         exposure_value = -6
-        #         set_exp = self.camera.set(cv2.CAP_PROP_EXPOSURE, exposure_value)
-        #         time.sleep(0.2)
-        #         current_exposure = self.camera.get(cv2.CAP_PROP_EXPOSURE)
-        #         if set_exp:
-        #             print(f"Successfully set Exposure value to {exposure_value}. Current value: {current_exposure}")
-        #         else:
-        #             print(f"Warning: Could not set Exposure value. Current value: {current_exposure}")
-        #     else:
-        #         print("Warning: Could not set Manual Exposure mode.")
+        if set_manual_exposure and current_auto_exposure == 0:
+            print(f"Successfully set Manual Exposure mode (Value: {current_auto_exposure}).")
+            print(f"Attempting to set manual exposure value to: {MANUAL_EXPOSURE_VALUE}")
+            # Setting exposure requires experimentation! Range varies by camera.
+            # Negative values typically reduce exposure (make image darker).
+            set_exp = self.camera.set(cv2.CAP_PROP_EXPOSURE, MANUAL_EXPOSURE_VALUE)
+            time.sleep(0.2) # Allow time for setting to apply
+            current_exposure = self.camera.get(cv2.CAP_PROP_EXPOSURE)
+            if set_exp:
+                # Note: The value read back might not perfectly match the set value,
+                # but it should be close or reflect the camera's nearest possible setting.
+                print(f"Successfully set Exposure value. Current value reported by camera: {current_exposure}")
+                if current_exposure != MANUAL_EXPOSURE_VALUE:
+                    print(f"  (Note: Camera reported value {current_exposure} differs slightly from requested {MANUAL_EXPOSURE_VALUE})")
+            else:
+                print(f"Warning: Could not set Exposure value. Current value: {current_exposure}")
+        else:
+            print(f"Warning: Could not set Manual Exposure mode. Current mode value: {current_auto_exposure}")
+            print("  Manual exposure adjustment may not work.")
         # ---
 
         self.results_dir = "results"
@@ -202,7 +191,7 @@ class NameTagQualityControl:
 
         Returns:
             dict: A dictionary containing the classification result,
-                  confidence, timestamp, and image path.
+                  confidence, timestamp, image path, and image data.
         """
         try:
             # Capture image (high-res, cropped to 22:9 and potentially zoomed, undistorted)
@@ -215,6 +204,7 @@ class NameTagQualityControl:
                  "confidence": 0.0,
                  "timestamp": time.time(),
                  "image_path": None, # No image saved
+                 "image_data": None, # No image data
                  "error": f"Image capture failed: {capture_err}"
              }
 
@@ -246,6 +236,7 @@ class NameTagQualityControl:
                  "confidence": 0.0,
                  "timestamp": time.time(),
                  "image_path": temp_path, # Image might exist even if model failed
+                 "image_data": image, # Still return image data if inference fails
                  "error": f"Model inference failed: {model_err}"
              }
 
@@ -257,6 +248,7 @@ class NameTagQualityControl:
                  "confidence": 0.0,
                  "timestamp": time.time(),
                  "image_path": temp_path,
+                 "image_data": image, # Still return image data
                  "error": "Inference failed or returned no probabilities"
              }
         # ---
@@ -283,14 +275,15 @@ class NameTagQualityControl:
         # Save result JSON only if inference was successful
         latest_result_path = os.path.join(self.results_dir, "latest_result.json")
         try:
+            # Create a copy for JSON to avoid serializing the large image data
+            json_data = result_data.copy()
             with open(latest_result_path, "w") as f:
-                json.dump(result_data, f, indent=4) # Add indent for readability
+                json.dump(json_data, f, indent=4) # Add indent for readability
         except IOError as e:
             print(f"Error writing results to {latest_result_path}: {e}")
 
 
         # Add the actual image data to the dictionary returned by the function
-        # This avoids reading it again later if saving failed or is slow
         result_data["image_data"] = image
         return result_data
 
@@ -316,6 +309,8 @@ if __name__ == "__main__":
 
         print("\nStarting inspection loop. Press Enter after viewing an image to capture the next one.")
         print("Press 'q' to quit.")
+        print(f"Using Manual Exposure Value: {MANUAL_EXPOSURE_VALUE} (Change in script if needed)")
+
 
         while not quit_flag: # Main loop controlled by flag
             # 1. Inspect the tag (captures, processes, saves, infers)
@@ -357,7 +352,7 @@ if __name__ == "__main__":
                 print(f"Result: {result['class']} (Confidence: {result['confidence']:.2f}) - No image data available to display.")
                 window_name = None # Flag that window wasn't shown
 
-            # 4. Wait for Enter key (13) or 'q' (113)
+            # 4. Wait for Enter key (13) or 'q' (ord('q'))
             if window_name:
                 print("-> Window focused. Press Enter to capture next, 'q' to quit.")
             else:
