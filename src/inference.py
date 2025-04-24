@@ -53,9 +53,9 @@ class NameTagQualityControl:
 		self.camera.release()
 
 
-# Example usage
+
 if __name__ == "__main__":
-	qc = NameTagQualityControl("runs/classify/name_tag_quality/weights/best.pt")
+	qc = NameTagQualityControl("runs/classify/train2/weights/best.pt")
 
 	while True:
 		input("Press Enter to inspect a name tag...")
