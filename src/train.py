@@ -23,6 +23,7 @@ if __name__ == '__main__':
 	                      epochs = 1000,
 	                      patience = 50,
 	                      imgsz = [1000, 410],
+	                      rect = True,
 	                      workers = 7,          # CPU intensive
 	                      batch = 128           # GPU VRAM intensive
 	                      )
