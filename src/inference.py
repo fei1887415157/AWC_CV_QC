@@ -3,28 +3,28 @@ from ultralytics import YOLO
 import time
 import json
 import os
+import numpy as np # Import numpy for array operations
 import traceback # For detailed error printing
-
-
+import math # For rotation calculations
 
 # --- Global Configuration ---
 MODEL_PATH = "runs/classify/train9/weights/best.pt" # Path to your trained .pt model
 CAMERA_ID = 0 # Change if you have multiple cameras
 REQUESTED_WIDTH = 1920 # Desired camera width
 REQUESTED_HEIGHT = 1080 # Desired camera height
-ZOOM_FACTOR = 2.0 # Set desired zoom factor (1.0 = no zoom, 2.0 = 2x zoom)
-TARGET_ASPECT_RATIO = 22/9 # Define the target aspect ratio (22:9)
-AUTO_EXPOSURE = True
-MANUAL_EXPOSURE_STOP = -5
+ZOOM_FACTOR = 4 # Set desired zoom factor (1.0 = no zoom, 2.0 = 2x zoom)
+AUTO_EXPOSURE = True # Keep exposure setting from previous version
+MANUAL_EXPOSURE_STOP = -5 # Keep exposure setting from previous version
+MIN_RECT_AREA = 500 # Minimum pixel area for a detected rectangle
+RECT_DETECT_RETRIES = 100 # Number of times to retry rectangle detection
+APPROX_POLY_EPSILON_FACTOR = 0.05 # tolerance of rectangle distortion due to camera
 # ---
 
-
-
 class NameTagQualityControl:
-    def __init__(self, model_path, camera_id=0, zoom_factor=2.0):
+    def __init__(self, model_path, camera_id=0, zoom_factor=1):
         """
         Initializes the NameTagQualityControl class. Attempts to set camera
-        resolution and enables auto-exposure mode (using 0.25 as requested).
+        resolution and exposure mode.
 
         Args:
             model_path (str): Path to the trained YOLO classification model.
@@ -32,8 +32,6 @@ class NameTagQualityControl:
             zoom_factor (float): The desired zoom factor (e.g., 2.0 for 2x zoom).
         """
         self.model = YOLO(model_path)
-        # Try different backends if default doesn't allow setting parameters
-        # self.camera = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW) # Example for Windows DirectShow
         self.camera = cv2.VideoCapture(camera_id)
         if not self.camera.isOpened():
              raise Exception(f"Error: Could not open camera with ID {camera_id}")
@@ -54,242 +52,315 @@ class NameTagQualityControl:
              print(f"Actual camera resolution is: {actual_width}x{actual_height}")
         # ---
 
-        # --- Set Exposure Mode
+        # --- Set Exposure Mode ---
         if AUTO_EXPOSURE:
+            print("Setting Auto Exposure (0.25)...")
             self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
         else:
-            self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
+            print(f"Setting Manual Exposure (Value: {MANUAL_EXPOSURE_STOP})...")
+            set_manual_mode = self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75) # Try non-standard first
+            time.sleep(0.1)
+            if not set_manual_mode:
+                 print("Setting manual mode with 0.75 failed, trying 0...")
+                 self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0) # Standard manual
+                 time.sleep(0.1)
             self.camera.set(cv2.CAP_PROP_EXPOSURE, MANUAL_EXPOSURE_STOP)
+        print(f"Current Auto Exposure setting reported: {self.camera.get(cv2.CAP_PROP_AUTO_EXPOSURE)}")
+        print(f"Current Exposure value reported: {self.camera.get(cv2.CAP_PROP_EXPOSURE)}")
+        # ---
 
         self.results_dir = "results"
         os.makedirs(self.results_dir, exist_ok=True)
         self.zoom_factor = zoom_factor
-        self.target_aspect_ratio = TARGET_ASPECT_RATIO # Store aspect ratio
 
-    def _process_frame(self, frame):
-        """
-        Applies aspect ratio cropping (22:9) and zooming to a given frame.
-
-        Args:
-            frame (numpy.ndarray): The input frame from the camera.
-
-        Returns:
-            numpy.ndarray: The processed (cropped and zoomed) frame.
-
-        Raises:
-            Exception: If cropping or zooming results in an invalid frame.
-        """
+    def _apply_zoom(self, frame):
+        """Applies center zoom to the frame."""
         if frame is None or frame.size == 0:
-             # Return None or raise error if frame is invalid before processing
-             # Returning None might be safer for the live loop
-             print("Warning: Invalid frame received in _process_frame.")
+             print("Warning: Invalid frame passed to zoom.")
              return None
-             # raise ValueError("Input frame to _process_frame is invalid.")
-
+        if self.zoom_factor <= 1.0:
+            return frame # Return original if no zoom needed
 
         h, w = frame.shape[:2]
-        if h == 0 or w == 0:
-             print(f"Warning: Input frame has invalid dimensions: {w}x{h}")
-             return None # Return None if dimensions are invalid
-             # raise ValueError(f"Input frame has invalid dimensions: {w}x{h}")
+        center_x, center_y = w // 2, h // 2
 
+        new_w = int(w / self.zoom_factor)
+        new_h = int(h / self.zoom_factor)
 
-        original_aspect_ratio = w / h
+        x1 = max(0, center_x - new_w // 2)
+        y1 = max(0, center_y - new_h // 2)
+        x2 = min(w, x1 + new_w)
+        y2 = min(h, y1 + new_h)
 
-        # --- Aspect Ratio Cropping (22:9) ---
-        try:
-            if original_aspect_ratio > self.target_aspect_ratio:
-                crop_h = h
-                crop_w = int(crop_h * self.target_aspect_ratio)
-            else:
-                crop_w = w
-                crop_h = int(crop_w / self.target_aspect_ratio)
+        # Ensure coordinates are valid before slicing
+        if x1 >= x2 or y1 >= y2:
+             print(f"Warning: Invalid zoom coordinates ({x1},{y1}) to ({x2},{y2}).")
+             return None
 
-            if crop_w <= 0 or crop_h <= 0:
-                 raise ValueError(f"Calculated invalid crop dimensions: {crop_w}x{crop_h} from frame {w}x{h}")
+        zoomed_frame = frame[y1:y2, x1:x2]
 
-            x1 = max(0, (w - crop_w) // 2)
-            y1 = max(0, (h - crop_h) // 2)
-            x2 = x1 + crop_w
-            y2 = y1 + crop_h
+        if zoomed_frame.size == 0:
+            print("Warning: Zoom resulted in empty frame.")
+            return None
+        return zoomed_frame
 
-            aspect_cropped_frame = frame[y1:y2, x1:x2]
-
-            if aspect_cropped_frame.size == 0:
-                 raise ValueError(f"Aspect ratio cropping resulted in an empty image. Original: {w}x{h}, Crop: {crop_w}x{crop_h}, Coords: ({x1},{y1}) to ({x2},{y2})")
-        except Exception as crop_err:
-             print(f"Error during aspect ratio cropping: {crop_err}")
-             return None # Return None on cropping error
-        # --- End Aspect Ratio Cropping ---
-
-        # --- Zoom Logic (Applied to the 22:9 cropped image) ---
-        try:
-            if self.zoom_factor > 1.0:
-                ch, cw = aspect_cropped_frame.shape[:2]
-                if ch == 0 or cw == 0:
-                     raise ValueError(f"Aspect cropped frame has invalid dimensions before zoom: {cw}x{ch}")
-
-                center_x, center_y = cw // 2, ch // 2
-                zoom_w = int(cw / self.zoom_factor)
-                zoom_h = int(ch / self.zoom_factor)
-
-                if zoom_w <= 0 or zoom_h <= 0:
-                     raise ValueError(f"Calculated invalid zoom dimensions: {zoom_w}x{zoom_h} from cropped frame {cw}x{ch}")
-
-                zx1 = max(0, center_x - zoom_w // 2)
-                zy1 = max(0, center_y - zoom_h // 2)
-                zx2 = min(cw, zx1 + zoom_w)
-                zy2 = min(ch, zy1 + zoom_h)
-
-                final_frame = aspect_cropped_frame[zy1:zy2, zx1:zx2]
-
-                if final_frame.size == 0:
-                     raise ValueError(f"Zoom cropping resulted in an empty image. Cropped: {cw}x{ch}, Zoom Crop: {zoom_w}x{zoom_h}, Coords: ({zx1},{zy1}) to ({zx2},{zy2})")
-
-                return final_frame
-            else:
-                # If no zoom is applied, return the 22:9 cropped frame directly
-                return aspect_cropped_frame
-        except Exception as zoom_err:
-             print(f"Error during zoom processing: {zoom_err}")
-             return None # Return None on zoom error
-        # --- End Zoom Logic ---
-
-    def capture_image(self):
+    def _find_largest_rectangle_contour(self, contours):
         """
-        Captures ONE image from the camera and processes it (crop/zoom).
+        Finds the largest contour with 4 vertices (approximated as a rectangle).
+
+        Args:
+            contours: A list of contours found by cv2.findContours.
 
         Returns:
-            numpy.ndarray: The processed image frame, or None if capture/processing fails.
-
-        Raises:
-            Exception: Only if retrying capture fails definitively.
+            The largest original contour that approximates to 4 vertices, or None.
         """
+        largest_rectangle_contour = None
+        max_area = 0
+
+        for contour in contours:
+            perimeter = cv2.arcLength(contour, True)
+            # Approximate the contour shape using the adjusted epsilon factor
+            approx = cv2.approxPolyDP(contour, APPROX_POLY_EPSILON_FACTOR * perimeter, True) # <<< Use factor here
+
+            if len(approx) == 4:
+                area = cv2.contourArea(contour)
+                if area > max_area and area > MIN_RECT_AREA:
+                    max_area = area
+                    largest_rectangle_contour = contour # Return the original contour
+
+        return largest_rectangle_contour
+
+
+    def _detect_rectangle_info(self, frame):
+        """
+        Detects the largest 4-sided polygon contour using Canny edge detection
+        and approxPolyDP.
+
+        Args:
+            frame (numpy.ndarray): The input frame (usually the zoomed frame).
+
+        Returns:
+            dict: {'bbox': (x,y,w,h), 'min_rect': ((cx,cy),(w,h),a)}
+                  or None if not found.
+        """
+        if frame is None or frame.size == 0:
+            return None
+
+        # --- Preprocessing ---
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            edges = cv2.Canny(blurred, 50, 150) # Tune thresholds if needed
+        except cv2.error as e:
+            print(f"Error during preprocessing for rectangle detection: {e}")
+            return None
+
+        # --- Contour Detection ---
+        contours, _ = cv2.findContours(edges.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        # --- Find Largest Rectangle Contour ---
+        largest_rect_contour = self._find_largest_rectangle_contour(contours) # Uses updated epsilon
+        if largest_rect_contour is None:
+             return None
+
+        # --- Calculate Bounding Boxes ---
+        bbox = cv2.boundingRect(largest_rect_contour) # (x, y, w, h) for drawing
+        min_rect = cv2.minAreaRect(largest_rect_contour) # ((cx,cy),(w,h),a) for rotation
+
+        # --- Basic Validation ---
+        x, y, w_rect, h_rect = bbox
+        if x < 0 or y < 0 or w_rect <= 0 or h_rect <= 0 or (x + w_rect > frame.shape[1]) or (y + h_rect > frame.shape[0]):
+             print(f"Warning: Invalid bounding rect coordinates: {bbox} for frame shape {frame.shape}")
+             return None
+
+        return {'bbox': bbox, 'min_rect': min_rect}
+
+
+    def _rotate_and_crop(self, frame, min_rect):
+         """
+         Rotates the frame based on the minAreaRect angle and crops the rectangle.
+
+         Args:
+             frame: The source image (usually the zoomed frame).
+             min_rect: The tuple returned by cv2.minAreaRect ((cx,cy),(w,h),a).
+
+         Returns:
+             The upright, cropped rectangle image, or None on error.
+         """
+         if frame is None or min_rect is None:
+              return None
+
+         center, size, angle = min_rect
+         width, height = size
+
+         # Get rotation matrix
+         M = cv2.getRotationMatrix2D(center, angle, 1.0)
+
+         # Perform rotation
+         try:
+              warped = cv2.warpAffine(frame, M, (frame.shape[1], frame.shape[0]), flags=cv2.INTER_CUBIC)
+              if warped is None: raise Exception("warpAffine returned None")
+         except Exception as e:
+              print(f"Error during warpAffine: {e}")
+              return None
+
+         # Crop the rotated rectangle
+         crop_width = int(round(width))
+         crop_height = int(round(height))
+         if crop_width <= 0 or crop_height <= 0:
+              print(f"Warning: Invalid crop dimensions from minAreaRect: {crop_width}x{crop_height}")
+              return None
+
+         try:
+              cropped = cv2.getRectSubPix(warped, (crop_width, crop_height), center)
+              if cropped is None: raise Exception("getRectSubPix returned None")
+         except Exception as e:
+              print(f"Error during getRectSubPix: {e}")
+              return None
+
+         # Rotate 90 degrees if height > width (common issue with minAreaRect angle)
+         if crop_height > crop_width * 1.1: # Adjusted threshold slightly
+              print("Rotating cropped image by 90 degrees due to aspect ratio.")
+              cropped = cv2.rotate(cropped, cv2.ROTATE_90_CLOCKWISE)
+
+
+         if cropped.size == 0:
+              print("Warning: Rotation/cropping resulted in empty image.")
+              return None
+         return cropped
+
+
+    def capture_raw_image(self):
+        """Captures ONE raw image from the camera."""
         ret, frame = self.camera.read()
         if not ret or frame is None:
-            print("Warning: Frame capture for processing failed or returned None, retrying...")
+            print("Warning: Frame capture failed or returned None, retrying...")
             time.sleep(0.1)
             ret, frame = self.camera.read()
             if not ret or frame is None:
-                 # Raise exception only if retry fails completely
-                 raise Exception("Failed to capture image for processing after retry")
-
-
-        # Process the captured frame using the helper method
-        processed_frame = self._process_frame(frame)
-        if processed_frame is None:
-             print("Warning: Frame processing returned None.")
-             # Decide whether to raise an error or return None
-             # Returning None might allow the main loop to continue more gracefully
-             return None
-        return processed_frame
+                 print("Error: Failed to capture image after retry")
+                 return None
+        return frame
 
 
     def inspect_tag(self):
         """
-        Captures ONE image specifically for processing/inference, runs inference,
-        and saves the results. Does NOT handle the live view display.
+        Captures raw image, zooms, retries rectangle detection, rotates/crops,
+        runs inference. Falls back to zoomed image if detection fails.
 
         Returns:
-            dict: A dictionary containing the classification result,
-                  confidence, timestamp, image path, and image data FOR THE CAPTURED FRAME.
-                  Returns an error dict if capture/processing/inference fails.
+            dict: Result dictionary with 'image_data' being the rotated/cropped
+                  rectangle, or the zoomed image on detection failure.
         """
-        try:
-            # Capture and process image specifically for this inspection
-            image = self.capture_image() # Gets the processed (cropped/zoomed) frame
-            if image is None: # Handle case where capture_image returned None
-                 raise Exception("capture_image returned None, cannot inspect.")
-        except Exception as capture_err:
-             print(f"Error during image capture/processing for inspection: {capture_err}")
-             # Return error dictionary
-             return {
-                 "class": "Error",
-                 "confidence": 0.0,
-                 "timestamp": time.time(),
-                 "image_path": None, # No image saved
-                 "image_data": None, # No image data
-                 "error": f"Image capture for inspection failed: {capture_err}"
-             }
+        # 1. Capture Raw Image
+        raw_image = self.capture_raw_image()
+        if raw_image is None:
+             return {"error": "Image capture failed", "image_data": None}
 
-        # Save image temporarily before inference
-        timestamp_str = f"{int(time.time())}" # Using only seconds for timestamp
-        temp_path = os.path.join(self.results_dir, f"temp_{timestamp_str}.jpg")
-        try:
-             # Save the potentially smaller, correctly aspected image
-             save_success = cv2.imwrite(temp_path, image)
-             if not save_success:
-                  print(f"Warning: Failed to save temporary image to {temp_path}")
-                  temp_path = None # Indicate image wasn't saved
-        except Exception as save_err:
-             print(f"Error saving temporary image: {save_err}")
-             temp_path = None # Indicate image wasn't saved
+        # 2. Apply Zoom
+        zoomed_image = self._apply_zoom(raw_image)
+        if zoomed_image is None:
+             return {"error": "Zoom processing failed", "image_data": None}
 
+        # 3. Detect Rectangle Coordinates (with Retries)
+        rect_info = None
+        print(f"Attempting rectangle detection (max {RECT_DETECT_RETRIES} times)...")
+        for attempt in range(RECT_DETECT_RETRIES):
+             rect_info = self._detect_rectangle_info(zoomed_image) # Uses updated epsilon
+             if rect_info:
+                  print(f"Rectangle detected on attempt {attempt + 1}.")
+                  break # Found it
+        else: # Loop finished without break
+             print(f"Rectangle detection failed after {RECT_DETECT_RETRIES} attempts.")
 
-        # Run inference only if image was successfully captured
-        # Note: We proceed even if saving failed, but image_path will be None
-        try:
-             # Ensure your model can handle the input size resulting from the crop/zoom
-             # Use the image in memory directly if saving failed, otherwise use path
-             source_for_model = image if temp_path is None else temp_path
-             results = self.model(source=source_for_model) # Pass image or path
-        except Exception as model_err:
-             print(f"Error during model inference: {model_err}")
-             return {
-                 "class": "Error",
-                 "confidence": 0.0,
-                 "timestamp": time.time(),
-                 "image_path": temp_path, # Image might exist even if model failed
-                 "image_data": image, # Still return image data if inference fails
-                 "error": f"Model inference failed: {model_err}"
-             }
+        # --- Process based on detection result ---
+        final_image = None
+        is_detection_fallback = False
+        error_msg = None # Initialize error message
 
-        # --- Check if results are valid ---
-        if not results or not hasattr(results[0], 'probs') or results[0].probs is None:
-             print("Warning: Model did not return valid results.")
-             return {
-                 "class": "Error",
-                 "confidence": 0.0,
-                 "timestamp": time.time(),
-                 "image_path": temp_path,
-                 "image_data": image, # Still return image data
-                 "error": "Inference failed or returned no probabilities"
-             }
-        # ---
-
-        # Extract results for classification
-        predicted_class_index = results[0].probs.top1
-        confidence = float(results[0].probs.top1conf)
-        # Ensure the class index is within the bounds of the names list
-        if results[0].names and predicted_class_index < len(results[0].names):
-             class_name = results[0].names[predicted_class_index]
+        if rect_info:
+            # 4. Rotate and Crop if rectangle detected
+            final_image = self._rotate_and_crop(zoomed_image, rect_info['min_rect'])
+            if final_image is None:
+                 print("Warning: Rotation/Cropping failed. Falling back to zoomed image.")
+                 final_image = zoomed_image # Fallback to zoomed
+                 is_detection_fallback = True
+                 error_msg = "Rotation/Cropping failed"
+            # else: error_msg remains None (Success)
         else:
-             print(f"Warning: Predicted class index {predicted_class_index} out of bounds or names list empty.")
-             class_name = "Unknown" # Assign a default name
+            # 5. Fallback to zoomed image if detection failed after retries
+            print("Using zoomed image due to detection failure.")
+            final_image = zoomed_image
+            is_detection_fallback = True
+            error_msg = f"Rectangle detection failed after {RECT_DETECT_RETRIES} retries"
 
 
-        # Create result dict
+        # --- Inference ---
+        classification_result = {}
+        if final_image is not None:
+            # Save final_image temporarily before inference
+            timestamp_str = f"{int(time.time())}"
+            temp_path = os.path.join(self.results_dir, f"temp_{timestamp_str}.jpg")
+            try:
+                 save_success = cv2.imwrite(temp_path, final_image)
+                 if not save_success: temp_path = None
+            except Exception: temp_path = None
+
+            # Run inference
+            try:
+                 source_for_model = final_image if temp_path is None else temp_path
+                 results = self.model(source=source_for_model)
+
+                 if not results or not hasattr(results[0], 'probs') or results[0].probs is None:
+                      classification_result = {"class": "Inference Error", "confidence": 0.0}
+                      if error_msg is None: error_msg = "Inference failed or returned no probabilities"
+                 else:
+                      predicted_class_index = results[0].probs.top1
+                      confidence = float(results[0].probs.top1conf)
+                      if results[0].names and predicted_class_index < len(results[0].names):
+                           class_name = results[0].names[predicted_class_index]
+                      else: class_name = "Unknown"
+                      classification_result = {"class": class_name, "confidence": confidence}
+
+            except Exception as model_err:
+                 print(f"Error during model inference: {model_err}")
+                 classification_result = {"class": "Inference Error", "confidence": 0.0}
+                 if error_msg is None: error_msg = f"Model inference failed: {model_err}"
+
+        else: # Should not happen if zoomed_image fallback works, but as safety
+             classification_result = {"class": "Processing Error", "confidence": 0.0}
+             if error_msg is None: error_msg = "final_image was None before inference"
+             temp_path = None
+
+
+        # --- Construct Final Result ---
         result_data = {
-            "class": class_name,
-            "confidence": confidence,
+            "class": classification_result.get("class", "Error"),
+            "confidence": classification_result.get("confidence", 0.0),
             "timestamp": time.time(),
-            "image_path": temp_path # Store the path (or None if save failed)
+            "image_path": temp_path,
+            "image_data": final_image # This is rotated/cropped or zoomed
         }
+        if is_detection_fallback:
+             # Overwrite class/confidence if detection failed, even if inference ran
+             result_data["class"] = "Detection Failed"
+        if error_msg:
+             result_data["error"] = error_msg
 
-        # Save result JSON only if inference was successful
+
+        # --- Save JSON ---
         latest_result_path = os.path.join(self.results_dir, "latest_result.json")
         try:
-            # Create a copy for JSON to avoid serializing the large image data
-            json_data = result_data.copy()
+            json_data = {k: v for k, v in result_data.items() if k != 'image_data'}
             with open(latest_result_path, "w") as f:
-                json.dump(json_data, f, indent=4) # Add indent for readability
+                json.dump(json_data, f, indent=4)
         except IOError as e:
             print(f"Error writing results to {latest_result_path}: {e}")
 
-
-        # Add the actual image data (the processed one) to the dictionary returned by the function
-        result_data["image_data"] = image
         return result_data
+
 
     def close(self):
         """Releases the camera resource."""
@@ -305,123 +376,110 @@ if __name__ == "__main__":
         exit()
     # ---
 
-    qc = None # Initialize qc to None for finally block safety
+    qc = None
     quit_flag = False
-    live_window_name = "Live Feed (Processed)" # Updated window name
-    # --- Use a fixed name for the result window ---
-    result_window_name = "Inspection Result"
-    result_window_created = False # Flag to track if window exists
-    # ---
+    live_window_name = "Live Feed (Zoomed + Box)"
+    result_window_name = "Inspection Result (Cropped & Rotated)"
+    result_window_created = False
 
     try:
-        # Use the global ZOOM_FACTOR constant during instantiation
         qc = NameTagQualityControl(MODEL_PATH, camera_id=CAMERA_ID, zoom_factor=ZOOM_FACTOR)
 
         print("\nStarting inspection loop.")
-        print("Press Enter to capture/inspect the current view and update the 'Inspection Result' window.")
+        print("Live feed shows zoomed view with detected rectangle. Press Enter to capture, crop, rotate and inspect.")
         print("Press 'q' in any window to quit.")
-        print(f"Using Auto Exposure setting: 0.25 (Behavior depends on driver interpretation)")
+        if AUTO_EXPOSURE:
+            print(f"Using Auto Exposure setting: 0.25 (Behavior depends on driver interpretation)")
+        else:
+            print(f"Using Manual Exposure setting: {MANUAL_EXPOSURE_STOP}")
 
 
         while not quit_flag: # Main loop controlled by flag
 
             # --- Live Video Feed ---
-            ret_live, live_frame_raw = qc.camera.read() # Read the raw frame
-            processed_live_frame = None # Initialize
+            ret_live, live_frame_raw = qc.camera.read()
+            display_live_frame = None # Frame to actually display
 
             if ret_live and live_frame_raw is not None:
                 try:
-                    # Process the raw frame using the same logic as capture_image
-                    processed_live_frame = qc._process_frame(live_frame_raw)
-                    if processed_live_frame is not None:
-                         # Display the PROCESSED frame in the live view
-                         cv2.imshow(live_window_name, processed_live_frame)
+                    # 1. Apply zoom for the live feed display
+                    zoomed_live_frame = qc._apply_zoom(live_frame_raw)
+
+                    if zoomed_live_frame is not None:
+                         # Make a copy to draw on
+                         display_live_frame = zoomed_live_frame.copy()
+
+                         # 2. Detect rectangle info (bbox needed for drawing)
+                         live_rect_info = qc._detect_rectangle_info(zoomed_live_frame) # Uses updated epsilon
+
+                         # 3. Draw bounding box if coordinates are found
+                         if live_rect_info and 'bbox' in live_rect_info:
+                              x, y, w, h = live_rect_info['bbox']
+                              cv2.rectangle(display_live_frame, (x, y), (x + w, y + h), (0, 255, 0), 2) # Green box
+
+                         # Display the frame (zoomed, potentially with box)
+                         cv2.imshow(live_window_name, display_live_frame)
                     else:
-                         # Optionally show raw frame if processing failed
-                         # cv2.imshow(live_window_name, live_frame_raw)
-                         pass # Or just don't update the window
+                         pass # Keep previous frame shown if zoom fails
+
                 except Exception as live_process_err:
                     print(f"Error processing live frame: {live_process_err}")
-                    # Optionally display the raw frame on error or just skip display
-                    # cv2.imshow(live_window_name, live_frame_raw) # Fallback to raw
             else:
                 print("Warning: Failed to grab frame for live feed.")
-                # Optional: break or continue based on whether live feed is critical
-                # break
             # ---
 
             # --- Handle Key Press for Quit or Capture ---
-            # Check for key press. waitKey is essential for imshow to work.
-            key = cv2.waitKey(1) & 0xFF # Check frequently for responsiveness
+            key = cv2.waitKey(1) & 0xFF
 
             if key == ord('q'):
                 print("Quit key pressed.")
                 quit_flag = True
-                break # Exit the main loop immediately
+                break
 
             elif key == 13: # Enter key - Trigger inspection
-                print("\nEnter pressed, inspecting tag...")
+                print("\nEnter pressed, inspecting tag (Capture -> Zoom -> Retry Detect -> Rotate/Crop)...")
 
-                # --- Removed destroyWindow call ---
-
-                # 1. Inspect the tag (captures, processes, saves, infers)
-                # This already uses the processed frame internally via capture_image -> _process_frame
+                # 1. Inspect the tag (handles all steps internally including retries and fallback)
                 result = qc.inspect_tag()
 
-                # 2. Handle potential errors from inspection
+                # Get the image data to display (could be rotated/cropped or zoomed fallback)
+                img_display = result.get("image_data")
+
+                # Update window title based on result
                 if "error" in result:
                      print(f"Inspection Error: {result['error']}")
-                     if result.get('image_path'):
-                          print(f"  (Image attempted save at: {result['image_path']})")
-                     print("Error occurred during inspection. Press Enter to retry, 'q' to quit...")
-                     # Do not update result window on error
+                     window_title = f"Error: {result['error']}"
+                elif result.get("class") == "Detection Failed":
+                     print("Inspection finished: Detection Failed (showing zoomed image).")
+                     window_title = "Result: Detection Failed"
                 else:
-                    # 3. Display the processed/inspected image if available in result
-                    # This is the same image data obtained from qc.inspect_tag()
-                    img_display = result.get("image_data")
-                    if img_display is not None and img_display.size > 0:
-                         print(f"Displaying result: {result['class']} (Confidence: {result['confidence']:.2f})")
-                         # --- Use the fixed result_window_name ---
-                         try:
-                            # This will create the window if it doesn't exist,
-                            # or update it if it does.
-                            cv2.imshow(result_window_name, img_display)
-                            result_window_created = True # Mark that the window exists
-                            # Update window title dynamically (optional, but good UX)
-                            cv2.setWindowTitle(result_window_name, f"Result: {result['class']} (Conf: {result['confidence']:.2f})")
-                            print(f"-> '{result_window_name}' updated. Press Enter to capture next, 'q' to quit.")
-                         except Exception as display_e:
-                             print(f"Error displaying result image in '{result_window_name}': {display_e}")
-                             # Consider closing the specific window if display fails repeatedly
-                             # if result_window_created:
-                             #    try: cv2.destroyWindow(result_window_name)
-                             #    except: pass
-                             #    result_window_created = False
+                     print(f"Displaying result: {result['class']} (Confidence: {result['confidence']:.2f})")
+                     window_title = f"Result: {result['class']} (Conf: {result['confidence']:.2f})"
 
-                    else:
-                        print(f"Result: {result['class']} (Confidence: {result['confidence']:.2f}) - No processed image data available to display.")
-                        # Optionally clear the result window if no data?
-                        # if result_window_created:
-                        #    # Create a blank image or similar to clear
-                        #    pass
+
+                # Display the image (if any) and update title
+                if img_display is not None and img_display.size > 0:
+                     try:
+                          cv2.imshow(result_window_name, img_display)
+                          result_window_created = True
+                          cv2.setWindowTitle(result_window_name, window_title)
+                          print(f"-> '{result_window_name}' updated. Press Enter to capture next, 'q' to quit.")
+                     except Exception as display_e:
+                          print(f"Error displaying result image in '{result_window_name}': {display_e}")
+                else:
+                     # Handle case where even fallback image is missing
+                     print("No image data available to display for result.")
 
 
             # --- End of Enter Key Handling ---
 
-            # Small sleep if no key was pressed, prevents high CPU in some cases,
-            # but waitKey(1) already includes a small delay.
-            # time.sleep(0.01)
-
     except Exception as e:
-        # Catch critical errors during setup or loop
         print(f"\nA critical error occurred: {e}")
-        traceback.print_exc() # Print detailed traceback for debugging
+        traceback.print_exc()
     finally:
-        # Ensure cleanup happens
         print("\nCleaning up...")
-        if qc is not None: # Check if qc was successfully initialized
+        if qc is not None:
             qc.close()
-        # Close all OpenCV windows
         cv2.destroyAllWindows()
         print("Program finished.")
 
