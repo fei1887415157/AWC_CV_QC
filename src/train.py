@@ -15,15 +15,20 @@ model = YOLO("yolo12n-cls.yaml")  # build a new model from YAML
 
 # Train the model
 if __name__ == '__main__':
-	# original fake resolution: 4000 * 1638
-	# original real resolution: 1000 * 410
-	# optimized resolution (naked eye): 500 * 205
-	results = model.train(data = "F:/JetBrains/PycharmProjects/AWC_CV_QC/dataset",
+	# original fake resolution: ~3000 * ~1000
+	# original real resolution: ~750 * ~250
+	# optimized resolution (naked eye): 300 * 100
+	# ultralytics uses letterboxing, so images will not be distorted
+	# Laptop: C:/Users/fei18/PycharmProjects/AWC_CV_QC/dataset
+	# Desktop: F:/JetBrains/PycharmProjects/AWC_CV_QC/dataset
+	results = model.train(#data = "F:/JetBrains/PycharmProjects/AWC_CV_QC/dataset",
+						  data = "C:/Users/fei18/PycharmProjects/AWC_CV_QC/dataset",
 	                      pretrained = False,
-	                      epochs = 1000,
+	                      epochs = 200,
 	                      patience = 50,
-	                      imgsz = [1000, 410],
+						  #imgsz=[750, 250],
+						  imgsz=[300, 100],
 	                      rect = True,
-	                      workers = 7,          # CPU intensive
-	                      batch = 128           # GPU VRAM intensive
+	                      workers = 3,          # CPU intensive, number of cores
+	                      batch = 16           # GPU VRAM / RAM intensive
 	                      )

@@ -3,22 +3,24 @@ from ultralytics import YOLO
 import time
 import json
 import os
-import numpy as np # Import numpy for array operations
 import traceback # For detailed error printing
-import math # For rotation calculations
+
+
 
 # --- Global Configuration ---
-MODEL_PATH = "runs/classify/train9/weights/best.pt" # Path to your trained .pt model
+MODEL_PATH = "runs/classify/train2/weights/best.pt" # Path to your trained .pt model
 CAMERA_ID = 0 # Change if you have multiple cameras
 REQUESTED_WIDTH = 1920 # Desired camera width
 REQUESTED_HEIGHT = 1080 # Desired camera height
-ZOOM_FACTOR = 4 # Set desired zoom factor (1.0 = no zoom, 2.0 = 2x zoom)
+ZOOM_FACTOR = 3 # Set desired zoom factor (1.0 = no zoom, 2.0 = 2x zoom)
 AUTO_EXPOSURE = True # Keep exposure setting from previous version
 MANUAL_EXPOSURE_STOP = -5 # Keep exposure setting from previous version
 MIN_RECT_AREA = 500 # Minimum pixel area for a detected rectangle
 RECT_DETECT_RETRIES = 100 # Number of times to retry rectangle detection
 APPROX_POLY_EPSILON_FACTOR = 0.05 # tolerance of rectangle distortion due to camera
 # ---
+
+
 
 class NameTagQualityControl:
     def __init__(self, model_path, camera_id=0, zoom_factor=1):
@@ -229,7 +231,9 @@ class NameTagQualityControl:
          if cropped.size == 0:
               print("Warning: Rotation/cropping resulted in empty image.")
               return None
+
          return cropped
+
 
 
     def capture_raw_image(self):
@@ -389,7 +393,7 @@ if __name__ == "__main__":
         print("Live feed shows zoomed view with detected rectangle. Press Enter to capture, crop, rotate and inspect.")
         print("Press 'q' in any window to quit.")
         if AUTO_EXPOSURE:
-            print(f"Using Auto Exposure setting: 0.25 (Behavior depends on driver interpretation)")
+            print("Using Auto Exposure.")
         else:
             print(f"Using Manual Exposure setting: {MANUAL_EXPOSURE_STOP}")
 
