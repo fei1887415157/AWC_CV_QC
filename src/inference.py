@@ -8,7 +8,7 @@ import traceback # For detailed error printing
 
 
 # --- Global Configuration ---
-MODEL_PATH = "runs/classify/train2/weights/best.pt" # Path to your trained .pt model
+MODEL_PATH = "runs/classify/train9/weights/best.pt" # Path to your trained .pt model
 CAMERA_ID = 0 # Change if you have multiple cameras
 REQUESTED_WIDTH = 1920 # Desired camera width
 REQUESTED_HEIGHT = 1080 # Desired camera height
