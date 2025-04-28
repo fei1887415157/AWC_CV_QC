@@ -4,20 +4,33 @@ import time
 import json
 import os
 import traceback # For detailed error printing
+import numpy as np
 
 
 
-# --- Global Configuration ---
-MODEL_PATH = "runs/classify/train9/weights/best.pt" # Path to your trained .pt model
+# best to worst model: n, m, x/s/l
+
+
+# ---
+MODEL_PATH = "runs/classify/11s/weights/best.pt"
+# ---
+
+# --- Camera ---
 CAMERA_ID = 0 # Change if you have multiple cameras
-REQUESTED_WIDTH = 1920 # Desired camera width
-REQUESTED_HEIGHT = 1080 # Desired camera height
-ZOOM_FACTOR = 3 # Set desired zoom factor (1.0 = no zoom, 2.0 = 2x zoom)
-AUTO_EXPOSURE = True # Keep exposure setting from previous version
-MANUAL_EXPOSURE_STOP = -5 # Keep exposure setting from previous version
-MIN_RECT_AREA = 500 # Minimum pixel area for a detected rectangle
-RECT_DETECT_RETRIES = 100 # Number of times to retry rectangle detection
-APPROX_POLY_EPSILON_FACTOR = 0.05 # tolerance of rectangle distortion due to camera
+REQUESTED_WIDTH = 1920 # camera width
+REQUESTED_HEIGHT = 1080 # camera height
+ZOOM_FACTOR = 3 # 1 is no zoom
+AUTO_EXPOSURE = False
+MANUAL_EXPOSURE_STOP = -5
+# ---
+
+# --- Rectangle Detection ---
+MIN_RECT_AREA = 10000 # Minimum pixel area
+RECT_DETECT_RETRIES = 100 # Number of times to retry
+APPROX_POLY_EPSILON_FACTOR = 0.05 # amount of distortion due to camera, do not use too high value
+MIN_ASPECT_RATIO = 0.2
+MAX_ASPECT_RATIO = 5.0
+MORPH_KERNEL_SIZE = (5, 5) # Morphological kernel size
 # ---
 
 
@@ -106,78 +119,137 @@ class NameTagQualityControl:
             return None
         return zoomed_frame
 
-    def _find_largest_rectangle_contour(self, contours):
+
+
+    def _find_largest_rectangle_contour(self, contours, frame_shape):
         """
-        Finds the largest contour with 4 vertices (approximated as a rectangle).
+        Finds the largest contour that approximates to 4 vertices and meets
+        geometric criteria.
 
         Args:
             contours: A list of contours found by cv2.findContours.
+            frame_shape: The shape (height, width) of the frame for aspect ratio calculation.
 
         Returns:
-            The largest original contour that approximates to 4 vertices, or None.
+            The largest valid original contour, or None.
         """
         largest_rectangle_contour = None
         max_area = 0
 
-        for contour in contours:
-            perimeter = cv2.arcLength(contour, True)
-            # Approximate the contour shape using the adjusted epsilon factor
-            approx = cv2.approxPolyDP(contour, APPROX_POLY_EPSILON_FACTOR * perimeter, True) # <<< Use factor here
+        frame_height, frame_width = frame_shape[:2]
 
-            if len(approx) == 4:
-                area = cv2.contourArea(contour)
-                if area > max_area and area > MIN_RECT_AREA:
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < MIN_RECT_AREA: # Filter small contours early
+                continue
+
+            perimeter = cv2.arcLength(contour, True)
+            # Approximate the contour shape
+            approx = cv2.approxPolyDP(contour, APPROX_POLY_EPSILON_FACTOR * perimeter, True)
+
+            # --- Validation Checks ---
+            if len(approx) == 4: # Check if it approximates to a quadrilateral
+                # 1. Convexity Check
+                if not cv2.isContourConvex(approx):
+                    continue # Skip non-convex shapes
+
+                # 2. Bounding Box and Aspect Ratio Check
+                x, y, w, h = cv2.boundingRect(approx) # Use approx for aspect ratio
+                if w <= 0 or h <= 0:
+                    continue
+                # Calculate aspect ratio carefully to avoid division by zero
+                aspect_ratio = float(w) / h if h > 0 else 0
+                inv_aspect_ratio = float(h) / w if w > 0 else 0
+
+                # Ensure aspect ratio is within reasonable bounds
+                is_valid_aspect_ratio = (MIN_ASPECT_RATIO < aspect_ratio < MAX_ASPECT_RATIO) or \
+                                        (MIN_ASPECT_RATIO < inv_aspect_ratio < MAX_ASPECT_RATIO)
+
+                if not is_valid_aspect_ratio:
+                     # print(f"Skipping contour due to aspect ratio: {aspect_ratio:.2f}") # Debugging
+                     continue
+
+                # 3. Area Check (using original contour for accuracy)
+                if area > max_area:
+                    # Optional: Add angle check logic here if needed for more robustness
+
                     max_area = area
                     largest_rectangle_contour = contour # Return the original contour
 
         return largest_rectangle_contour
 
 
+
     def _detect_rectangle_info(self, frame):
         """
-        Detects the largest 4-sided polygon contour using Canny edge detection
-        and approxPolyDP.
+        Detects the largest 4-sided polygon contour using Canny edge detection,
+        morphological operations, and refined filtering.
 
         Args:
-            frame (numpy.ndarray): The input frame (usually the zoomed frame).
+            frame (numpy.ndarray): The input frame.
 
         Returns:
             dict: {'bbox': (x,y,w,h), 'min_rect': ((cx,cy),(w,h),a)}
                   or None if not found.
         """
         if frame is None or frame.size == 0:
+            print("Error: Input frame is empty.")
             return None
 
         # --- Preprocessing ---
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-            edges = cv2.Canny(blurred, 50, 150) # Tune thresholds if needed
+            # Increased blur slightly to help reduce noise before Canny
+            blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+            # Canny Edge Detection - Parameters might need tuning!
+            edges = cv2.Canny(blurred, 50, 150)
+
+            # --- Morphological Operations ---
+            # Create a kernel for morphological operations
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, MORPH_KERNEL_SIZE)
+            # Closing: Dilate then Erode - Fills small holes and gaps in the edges
+            closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+            # Optional: Opening (Erode then Dilate) can remove small noise specks
+            # opened_edges = cv2.morphologyEx(closed_edges, cv2.MORPH_OPEN, kernel)
+            # edges_processed = opened_edges # Use this if you add opening
+
+            edges_processed = closed_edges # Use the result after closing
+
+            # --- Debugging: Show intermediate steps ---
+            # cv2.imshow("Gray", gray)
+            # cv2.imshow("Blurred", blurred)
+            # cv2.imshow("Edges", edges)
+            # cv2.imshow("Closed Edges", edges_processed)
+            # cv2.waitKey(1) # Add a small delay if displaying debug windows
+
         except cv2.error as e:
-            print(f"Error during preprocessing for rectangle detection: {e}")
+            print(f"OpenCV error during preprocessing: {e}")
             return None
+        except Exception as e:
+            print(f"Unexpected error during preprocessing: {e}")
+            return None
+
 
         # --- Contour Detection ---
-        contours, _ = cv2.findContours(edges.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Find contours on the morphologically processed edges
+        contours, _ = cv2.findContours(edges_processed.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
+            # print("No contours found.") # Debugging
             return None
 
-        # --- Find Largest Rectangle Contour ---
-        largest_rect_contour = self._find_largest_rectangle_contour(contours) # Uses updated epsilon
+        # --- Find Largest Valid Rectangle Contour ---
+        largest_rect_contour = self._find_largest_rectangle_contour(contours, frame.shape)
         if largest_rect_contour is None:
+             # print("No valid rectangle contour found.") # Debugging
              return None
 
         # --- Calculate Bounding Boxes ---
+        # Use the *original* contour for final bounding boxes for precision
         bbox = cv2.boundingRect(largest_rect_contour) # (x, y, w, h) for drawing
         min_rect = cv2.minAreaRect(largest_rect_contour) # ((cx,cy),(w,h),a) for rotation
 
-        # --- Basic Validation ---
-        x, y, w_rect, h_rect = bbox
-        if x < 0 or y < 0 or w_rect <= 0 or h_rect <= 0 or (x + w_rect > frame.shape[1]) or (y + h_rect > frame.shape[0]):
-             print(f"Warning: Invalid bounding rect coordinates: {bbox} for frame shape {frame.shape}")
-             return None
-
         return {'bbox': bbox, 'min_rect': min_rect}
+
 
 
     def _rotate_and_crop(self, frame, min_rect):
@@ -417,9 +489,11 @@ if __name__ == "__main__":
                          live_rect_info = qc._detect_rectangle_info(zoomed_live_frame) # Uses updated epsilon
 
                          # 3. Draw bounding box if coordinates are found
-                         if live_rect_info and 'bbox' in live_rect_info:
-                              x, y, w, h = live_rect_info['bbox']
-                              cv2.rectangle(display_live_frame, (x, y), (x + w, y + h), (0, 255, 0), 2) # Green box
+                         if live_rect_info:
+                              min_rect = live_rect_info['min_rect']
+                              box = cv2.boxPoints(min_rect)  # Get the 4 corner points
+                              box = np.intp(box)  # Convert points to integer type for drawing
+                              cv2.drawContours(display_live_frame, [box], 0, (0, 255, 0), 2)
 
                          # Display the frame (zoomed, potentially with box)
                          cv2.imshow(live_window_name, display_live_frame)
