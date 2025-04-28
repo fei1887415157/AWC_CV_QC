@@ -5,223 +5,208 @@ import json
 import os
 import traceback # For detailed error printing
 import numpy as np
+import math # For rotation calculations
+import threading # For dedicated capture thread
+from queue import Queue # For thread-safe frame passing
 
-
-
-# best to worst model: n, m, x/s/l
-
-
-# ---
-MODEL_PATH = "runs/classify/11s/weights/best.pt"
-# ---
-
-# --- Camera ---
+# --- Global Configuration ---
+MODEL_PATH = "runs/classify/11s/weights/best.pt" # Path to your trained .pt model
 CAMERA_ID = 0 # Change if you have multiple cameras
 REQUESTED_WIDTH = 1920 # camera width
 REQUESTED_HEIGHT = 1080 # camera height
 ZOOM_FACTOR = 3 # 1 is no zoom
 AUTO_EXPOSURE = False
 MANUAL_EXPOSURE_STOP = -5
-# ---
-
-# --- Rectangle Detection ---
 MIN_RECT_AREA = 10000 # Minimum pixel area
 RECT_DETECT_RETRIES = 100 # Number of times to retry
-APPROX_POLY_EPSILON_FACTOR = 0.05 # amount of distortion due to camera, do not use too high value
+APPROX_POLY_EPSILON_FACTOR = 0.02 # amount of distortion due to camera
 MIN_ASPECT_RATIO = 0.2
 MAX_ASPECT_RATIO = 5.0
 MORPH_KERNEL_SIZE = (5, 5) # Morphological kernel size
 # ---
 
-
-
 class NameTagQualityControl:
     def __init__(self, model_path, camera_id=0, zoom_factor=1):
         """
-        Initializes the NameTagQualityControl class. Attempts to set camera
-        resolution and exposure mode.
-
-        Args:
-            model_path (str): Path to the trained YOLO classification model.
-            camera_id (int): ID of the camera to use (default is 0).
-            zoom_factor (float): The desired zoom factor (e.g., 2.0 for 2x zoom).
+        Initializes the NameTagQualityControl class. Sets up camera,
+        starts a dedicated capture thread, and configures settings.
         """
         self.model = YOLO(model_path)
+
+        # --- Initialize Camera (Try different backends if default fails) ---
+        print(f"Attempting to open camera ID {camera_id}...")
+        # Option 1: Default backend
         self.camera = cv2.VideoCapture(camera_id)
+
+        # Option 2: Try DirectShow backend (Windows specific) - Uncomment if on Windows and default has issues
+        # print("Trying DirectShow backend (cv2.CAP_DSHOW)...")
+        # self.camera = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+
+        # Option 3: Try Media Foundation backend (Windows specific) - Uncomment if on Windows
+        # print("Trying Media Foundation backend (cv2.CAP_MSMF)...")
+        # self.camera = cv2.VideoCapture(camera_id, cv2.CAP_MSMF)
+
+        # Option 4: Try AVFoundation backend (macOS specific) - Uncomment if on macOS
+        # print("Trying AVFoundation backend (cv2.CAP_AVFOUNDATION)...")
+        # self.camera = cv2.VideoCapture(camera_id, cv2.CAP_AVFOUNDATION)
+
+
         if not self.camera.isOpened():
-             raise Exception(f"Error: Could not open camera with ID {camera_id}")
-
-        # --- Attempt to set camera resolution ---
-        print(f"Attempting to set camera resolution to {REQUESTED_WIDTH}x{REQUESTED_HEIGHT}...")
-        set_w = self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, REQUESTED_WIDTH)
-        set_h = self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, REQUESTED_HEIGHT)
-
-        # --- Verify the actual resolution set ---
-        time.sleep(0.2)
-        actual_width = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
-        actual_height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        if set_w and set_h and actual_width == REQUESTED_WIDTH and actual_height == REQUESTED_HEIGHT:
-             print(f"Successfully set resolution to {actual_width}x{actual_height}.")
-        else:
-             print(f"Warning: Could not set requested resolution {REQUESTED_WIDTH}x{REQUESTED_HEIGHT} or it wasn't applied.")
-             print(f"Actual camera resolution is: {actual_width}x{actual_height}")
+             # If the chosen backend failed, maybe try the default as a last resort?
+             # Or just raise the exception.
+             raise Exception(f"Error: Could not open camera with ID {camera_id} using the selected backend.")
+        print(f"Camera backend API name: {self.camera.getBackendName()}")
         # ---
 
-        # --- Set Exposure Mode ---
+        # --- Configure Camera Settings ---
+        print("Configuring camera...")
+        self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, REQUESTED_WIDTH)
+        self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, REQUESTED_HEIGHT)
+        time.sleep(0.2) # Allow settings to apply
+
         if AUTO_EXPOSURE:
             print("Setting Auto Exposure (0.25)...")
             self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
         else:
             print(f"Setting Manual Exposure (Value: {MANUAL_EXPOSURE_STOP})...")
-            set_manual_mode = self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75) # Try non-standard first
+            # Try setting manual mode (0 is standard, 0.75 as fallback)
+            if not self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0):
+                 print("Setting manual mode with 0 failed, trying 0.75...")
+                 self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
             time.sleep(0.1)
-            if not set_manual_mode:
-                 print("Setting manual mode with 0.75 failed, trying 0...")
-                 self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0) # Standard manual
-                 time.sleep(0.1)
             self.camera.set(cv2.CAP_PROP_EXPOSURE, MANUAL_EXPOSURE_STOP)
-        print(f"Current Auto Exposure setting reported: {self.camera.get(cv2.CAP_PROP_AUTO_EXPOSURE)}")
-        print(f"Current Exposure value reported: {self.camera.get(cv2.CAP_PROP_EXPOSURE)}")
-        # ---
+
+        # Verify settings
+        actual_width = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        print(f"Actual camera resolution: {actual_width}x{actual_height}")
+        print(f"Actual Auto Exposure setting: {self.camera.get(cv2.CAP_PROP_AUTO_EXPOSURE)}")
+        print(f"Actual Exposure value: {self.camera.get(cv2.CAP_PROP_EXPOSURE)}")
+        # --- End Camera Settings ---
 
         self.results_dir = "results"
         os.makedirs(self.results_dir, exist_ok=True)
         self.zoom_factor = zoom_factor
 
+        # --- Threaded Capture Setup ---
+        self.capture_queue = Queue(maxsize=1) # Store only the latest frame
+        self.capture_active = True
+        self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self.capture_thread.start()
+        print("Capture thread started.")
+        # ---
+
+    def _capture_loop(self):
+        """Continuously captures frames and puts the latest one in the queue."""
+        print("Capture loop running...")
+        frame_counter = 0
+        error_counter = 0
+        while self.capture_active:
+            ret, frame = self.camera.read()
+            if ret and frame is not None:
+                # Optional: Basic frame validation (e.g., check dimensions, mean intensity)
+                # if frame.shape[0] != REQUESTED_HEIGHT or frame.shape[1] != REQUESTED_WIDTH:
+                #    print(f"Warning: Captured frame has unexpected dimensions: {frame.shape}")
+                #    error_counter += 1
+                #    continue # Skip potentially corrupt frame
+
+                try:
+                    if self.capture_queue.full():
+                        self.capture_queue.get_nowait() # Discard older frame
+                    self.capture_queue.put(frame)
+                    frame_counter += 1
+                    if frame_counter % 300 == 0: # Print status occasionally
+                         print(f"Capture thread status: {frame_counter} frames captured, {error_counter} errors.")
+
+                except Exception as e:
+                     print(f"Error putting frame in queue: {e}")
+                     error_counter += 1
+            else:
+                # print("Warning: camera.read() failed in capture thread.") # Reduce noise
+                error_counter += 1
+                if error_counter > 100 and error_counter % 50 == 0: # Log if many consecutive errors
+                     print(f"Warning: {error_counter} consecutive camera read failures!")
+                time.sleep(0.05) # Increase sleep slightly on read failure
+        print("Capture loop stopped.")
+
+    def stop_capture(self):
+        """Signals the capture thread to stop."""
+        print("Stopping capture thread...")
+        self.capture_active = False
+
+    def get_latest_frame(self):
+        """Gets the latest frame from the capture queue."""
+        try:
+            return self.capture_queue.get(timeout=0.5) # Increased timeout slightly
+        except Exception:
+            # print("Warning: Capture queue empty or timeout.") # Reduce noise
+            return None
+
+
     def _apply_zoom(self, frame):
         """Applies center zoom to the frame."""
-        if frame is None or frame.size == 0:
-             print("Warning: Invalid frame passed to zoom.")
-             return None
-        if self.zoom_factor <= 1.0:
-            return frame # Return original if no zoom needed
-
+        if frame is None or frame.size == 0: return None
+        if self.zoom_factor <= 1.0: return frame
         h, w = frame.shape[:2]
         center_x, center_y = w // 2, h // 2
-
         new_w = int(w / self.zoom_factor)
         new_h = int(h / self.zoom_factor)
-
         x1 = max(0, center_x - new_w // 2)
         y1 = max(0, center_y - new_h // 2)
         x2 = min(w, x1 + new_w)
         y2 = min(h, y1 + new_h)
-
-        # Ensure coordinates are valid before slicing
-        if x1 >= x2 or y1 >= y2:
-             print(f"Warning: Invalid zoom coordinates ({x1},{y1}) to ({x2},{y2}).")
-             return None
-
+        if x1 >= x2 or y1 >= y2: return None
         zoomed_frame = frame[y1:y2, x1:x2]
-
-        if zoomed_frame.size == 0:
-            print("Warning: Zoom resulted in empty frame.")
-            return None
+        if zoomed_frame.size == 0: return None
         return zoomed_frame
 
-
-
     def _find_largest_rectangle_contour(self, contours, frame_shape):
-        """
-        Finds the largest contour that approximates to 4 vertices and meets
-        geometric criteria.
-
-        Args:
-            contours: A list of contours found by cv2.findContours.
-            frame_shape: The shape (height, width) of the frame for aspect ratio calculation.
-
-        Returns:
-            The largest valid original contour, or None.
-        """
+        """Finds the largest contour that approximates to 4 vertices."""
         largest_rectangle_contour = None
         max_area = 0
-
-        frame_height, frame_width = frame_shape[:2]
-
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area < MIN_RECT_AREA: # Filter small contours early
-                continue
-
+            if area < MIN_RECT_AREA: continue
             perimeter = cv2.arcLength(contour, True)
-            # Approximate the contour shape
+            if perimeter <= 0: continue # Avoid division by zero
             approx = cv2.approxPolyDP(contour, APPROX_POLY_EPSILON_FACTOR * perimeter, True)
-
-            # --- Validation Checks ---
-            if len(approx) == 4: # Check if it approximates to a quadrilateral
-                # 1. Convexity Check
-                if not cv2.isContourConvex(approx):
-                    continue # Skip non-convex shapes
-
-                # 2. Bounding Box and Aspect Ratio Check
-                x, y, w, h = cv2.boundingRect(approx) # Use approx for aspect ratio
-                if w <= 0 or h <= 0:
-                    continue
-                # Calculate aspect ratio carefully to avoid division by zero
+            if len(approx) == 4:
+                # Check convexity and aspect ratio
+                if not cv2.isContourConvex(approx): continue
+                x, y, w, h = cv2.boundingRect(approx)
+                if w <= 0 or h <= 0: continue
                 aspect_ratio = float(w) / h if h > 0 else 0
                 inv_aspect_ratio = float(h) / w if w > 0 else 0
-
-                # Ensure aspect ratio is within reasonable bounds
                 is_valid_aspect_ratio = (MIN_ASPECT_RATIO < aspect_ratio < MAX_ASPECT_RATIO) or \
                                         (MIN_ASPECT_RATIO < inv_aspect_ratio < MAX_ASPECT_RATIO)
+                if not is_valid_aspect_ratio: continue
+                # Check if contour is reasonably within frame bounds (helps filter noise near edges)
+                # margin = 0.05 # 5% margin
+                # if x < margin * frame_shape[1] or y < margin * frame_shape[0] or \
+                #    (x + w) > (1 - margin) * frame_shape[1] or (y + h) > (1 - margin) * frame_shape[0]:
+                #      continue
 
-                if not is_valid_aspect_ratio:
-                     # print(f"Skipping contour due to aspect ratio: {aspect_ratio:.2f}") # Debugging
-                     continue
-
-                # 3. Area Check (using original contour for accuracy)
                 if area > max_area:
-                    # Optional: Add angle check logic here if needed for more robustness
-
                     max_area = area
-                    largest_rectangle_contour = contour # Return the original contour
-
+                    largest_rectangle_contour = contour
         return largest_rectangle_contour
 
-
-
     def _detect_rectangle_info(self, frame):
-        """
-        Detects the largest 4-sided polygon contour using Canny edge detection,
-        morphological operations, and refined filtering.
-
-        Args:
-            frame (numpy.ndarray): The input frame.
-
-        Returns:
-            dict: {'bbox': (x,y,w,h), 'min_rect': ((cx,cy),(w,h),a)}
-                  or None if not found.
-        """
-        if frame is None or frame.size == 0:
-            print("Error: Input frame is empty.")
-            return None
-
-        # --- Preprocessing ---
+        """Detects the largest valid rectangle contour."""
+        if frame is None or frame.size == 0: return None
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            # Increased blur slightly to help reduce noise before Canny
-            blurred = cv2.GaussianBlur(gray, (7, 7), 0)
-            # Canny Edge Detection - Parameters might need tuning!
-            edges = cv2.Canny(blurred, 50, 150)
-
-            # --- Morphological Operations ---
-            # Create a kernel for morphological operations
+            # Experiment with blur kernel size
+            blurred = cv2.GaussianBlur(gray, (7, 7), 0) # Was (5,5)
+            # Experiment with Canny thresholds
+            edges = cv2.Canny(blurred, 30, 100) # Lowered thresholds slightly, was 50, 150
+            # Experiment with morphological operations
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, MORPH_KERNEL_SIZE)
-            # Closing: Dilate then Erode - Fills small holes and gaps in the edges
+            # Dilate then Erode (Close) helps close gaps in edges
             closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-            # Optional: Opening (Erode then Dilate) can remove small noise specks
+            # Optional: Erode then Dilate (Open) helps remove small noise
             # opened_edges = cv2.morphologyEx(closed_edges, cv2.MORPH_OPEN, kernel)
-            # edges_processed = opened_edges # Use this if you add opening
-
-            edges_processed = closed_edges # Use the result after closing
-
-            # --- Debugging: Show intermediate steps ---
-            # cv2.imshow("Gray", gray)
-            # cv2.imshow("Blurred", blurred)
-            # cv2.imshow("Edges", edges)
-            # cv2.imshow("Closed Edges", edges_processed)
-            # cv2.waitKey(1) # Add a small delay if displaying debug windows
-
+            edges_processed = closed_edges # Use the closed edges
         except cv2.error as e:
             print(f"OpenCV error during preprocessing: {e}")
             return None
@@ -229,145 +214,115 @@ class NameTagQualityControl:
             print(f"Unexpected error during preprocessing: {e}")
             return None
 
-
-        # --- Contour Detection ---
-        # Find contours on the morphologically processed edges
         contours, _ = cv2.findContours(edges_processed.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            # print("No contours found.") # Debugging
-            return None
+        if not contours: return None
 
-        # --- Find Largest Valid Rectangle Contour ---
         largest_rect_contour = self._find_largest_rectangle_contour(contours, frame.shape)
-        if largest_rect_contour is None:
-             # print("No valid rectangle contour found.") # Debugging
-             return None
+        if largest_rect_contour is None: return None
 
-        # --- Calculate Bounding Boxes ---
-        # Use the *original* contour for final bounding boxes for precision
-        bbox = cv2.boundingRect(largest_rect_contour) # (x, y, w, h) for drawing
-        min_rect = cv2.minAreaRect(largest_rect_contour) # ((cx,cy),(w,h),a) for rotation
-
+        bbox = cv2.boundingRect(largest_rect_contour)
+        min_rect = cv2.minAreaRect(largest_rect_contour)
         return {'bbox': bbox, 'min_rect': min_rect}
 
-
-
     def _rotate_and_crop(self, frame, min_rect):
-         """
-         Rotates the frame based on the minAreaRect angle and crops the rectangle.
-
-         Args:
-             frame: The source image (usually the zoomed frame).
-             min_rect: The tuple returned by cv2.minAreaRect ((cx,cy),(w,h),a).
-
-         Returns:
-             The upright, cropped rectangle image, or None on error.
-         """
-         if frame is None or min_rect is None:
-              return None
-
+         """Rotates and crops the rectangle."""
+         if frame is None or min_rect is None: return None
          center, size, angle = min_rect
          width, height = size
+         # Adjust angle interpretation if necessary (common minAreaRect quirk)
+         # If angle is close to -90, swap width/height and adjust angle
+         if angle < -45:
+              angle += 90.0
+              width, height = height, width # Swap width and height
 
-         # Get rotation matrix
          M = cv2.getRotationMatrix2D(center, angle, 1.0)
-
-         # Perform rotation
          try:
-              warped = cv2.warpAffine(frame, M, (frame.shape[1], frame.shape[0]), flags=cv2.INTER_CUBIC)
+              # Calculate bounding box of rotated rectangle to determine output size
+              box = cv2.boxPoints(min_rect)
+              pts = np.intp(box) # Use np.intp for potentially large coordinates
+              x_coords = pts[:, 0]
+              y_coords = pts[:, 1]
+              rect_w = int(np.linalg.norm(pts[0] - pts[1]))
+              rect_h = int(np.linalg.norm(pts[1] - pts[2]))
+              # Use a slightly larger size for warpAffine to avoid clipping corners
+              warp_w = int(max(rect_w, rect_h) * 1.2)
+              warp_h = warp_w
+
+              # Adjust rotation matrix to center the rectangle in the output
+              M[0, 2] += (warp_w / 2) - center[0]
+              M[1, 2] += (warp_h / 2) - center[1]
+
+              # Perform rotation into the calculated size
+              warped = cv2.warpAffine(frame, M, (warp_w, warp_h), flags=cv2.INTER_CUBIC)
               if warped is None: raise Exception("warpAffine returned None")
+
          except Exception as e:
               print(f"Error during warpAffine: {e}")
               return None
 
-         # Crop the rotated rectangle
+         # Crop the final rectangle from the center of the warped image
          crop_width = int(round(width))
          crop_height = int(round(height))
-         if crop_width <= 0 or crop_height <= 0:
-              print(f"Warning: Invalid crop dimensions from minAreaRect: {crop_width}x{crop_height}")
-              return None
+         if crop_width <= 0 or crop_height <= 0: return None
 
          try:
-              cropped = cv2.getRectSubPix(warped, (crop_width, crop_height), center)
+              # Calculate the center in the *new* warped image coordinates
+              new_center = (warp_w / 2, warp_h / 2)
+              cropped = cv2.getRectSubPix(warped, (crop_width, crop_height), new_center)
               if cropped is None: raise Exception("getRectSubPix returned None")
          except Exception as e:
               print(f"Error during getRectSubPix: {e}")
               return None
 
-         # Rotate 90 degrees if height > width (common issue with minAreaRect angle)
-         if crop_height > crop_width * 1.1: # Adjusted threshold slightly
-              print("Rotating cropped image by 90 degrees due to aspect ratio.")
+         # Final check on aspect ratio (sometimes needed if initial angle adjustment wasn't perfect)
+         if crop_height > crop_width * 1.2:
+              print("Rotating final cropped image by 90 degrees.")
               cropped = cv2.rotate(cropped, cv2.ROTATE_90_CLOCKWISE)
 
-
-         if cropped.size == 0:
-              print("Warning: Rotation/cropping resulted in empty image.")
-              return None
-
+         if cropped.size == 0: return None
          return cropped
-
-
-
-    def capture_raw_image(self):
-        """Captures ONE raw image from the camera."""
-        ret, frame = self.camera.read()
-        if not ret or frame is None:
-            print("Warning: Frame capture failed or returned None, retrying...")
-            time.sleep(0.1)
-            ret, frame = self.camera.read()
-            if not ret or frame is None:
-                 print("Error: Failed to capture image after retry")
-                 return None
-        return frame
-
 
     def inspect_tag(self):
         """
-        Captures raw image, zooms, retries rectangle detection, rotates/crops,
+        Gets latest frame, zooms, retries rectangle detection, rotates/crops,
         runs inference. Falls back to zoomed image if detection fails.
-
-        Returns:
-            dict: Result dictionary with 'image_data' being the rotated/cropped
-                  rectangle, or the zoomed image on detection failure.
         """
-        # 1. Capture Raw Image
-        raw_image = self.capture_raw_image()
+        # 1. Get Latest Raw Image from queue
+        raw_image = self.get_latest_frame()
         if raw_image is None:
-             return {"error": "Image capture failed", "image_data": None}
+             print("Capture queue was empty, attempting direct read...")
+             ret_direct, raw_image = self.camera.read()
+             if not ret_direct or raw_image is None:
+                 return {"error": "Image capture failed (queue empty & direct read failed)", "image_data": None}
+
+        raw_image = raw_image.copy()
 
         # 2. Apply Zoom
         zoomed_image = self._apply_zoom(raw_image)
         if zoomed_image is None:
-             return {"error": "Zoom processing failed", "image_data": None}
+             return {"error": "Zoom processing failed", "image_data": raw_image}
 
         # 3. Detect Rectangle Coordinates (with Retries)
         rect_info = None
-        print(f"Attempting rectangle detection (max {RECT_DETECT_RETRIES} times)...")
         for attempt in range(RECT_DETECT_RETRIES):
-             rect_info = self._detect_rectangle_info(zoomed_image) # Uses updated epsilon
-             if rect_info:
-                  print(f"Rectangle detected on attempt {attempt + 1}.")
-                  break # Found it
-        else: # Loop finished without break
-             print(f"Rectangle detection failed after {RECT_DETECT_RETRIES} attempts.")
+             rect_info = self._detect_rectangle_info(zoomed_image.copy())
+             if rect_info: break
 
         # --- Process based on detection result ---
         final_image = None
         is_detection_fallback = False
-        error_msg = None # Initialize error message
+        error_msg = None
 
         if rect_info:
             # 4. Rotate and Crop if rectangle detected
             final_image = self._rotate_and_crop(zoomed_image, rect_info['min_rect'])
             if final_image is None:
                  print("Warning: Rotation/Cropping failed. Falling back to zoomed image.")
-                 final_image = zoomed_image # Fallback to zoomed
+                 final_image = zoomed_image
                  is_detection_fallback = True
                  error_msg = "Rotation/Cropping failed"
-            # else: error_msg remains None (Success)
         else:
-            # 5. Fallback to zoomed image if detection failed after retries
-            print("Using zoomed image due to detection failure.")
+            # 5. Fallback to zoomed image if detection failed
             final_image = zoomed_image
             is_detection_fallback = True
             error_msg = f"Rectangle detection failed after {RECT_DETECT_RETRIES} retries"
@@ -376,19 +331,15 @@ class NameTagQualityControl:
         # --- Inference ---
         classification_result = {}
         if final_image is not None:
-            # Save final_image temporarily before inference
             timestamp_str = f"{int(time.time())}"
             temp_path = os.path.join(self.results_dir, f"temp_{timestamp_str}.jpg")
             try:
                  save_success = cv2.imwrite(temp_path, final_image)
                  if not save_success: temp_path = None
             except Exception: temp_path = None
-
-            # Run inference
             try:
                  source_for_model = final_image if temp_path is None else temp_path
                  results = self.model(source=source_for_model)
-
                  if not results or not hasattr(results[0], 'probs') or results[0].probs is None:
                       classification_result = {"class": "Inference Error", "confidence": 0.0}
                       if error_msg is None: error_msg = "Inference failed or returned no probabilities"
@@ -399,17 +350,14 @@ class NameTagQualityControl:
                            class_name = results[0].names[predicted_class_index]
                       else: class_name = "Unknown"
                       classification_result = {"class": class_name, "confidence": confidence}
-
             except Exception as model_err:
                  print(f"Error during model inference: {model_err}")
                  classification_result = {"class": "Inference Error", "confidence": 0.0}
                  if error_msg is None: error_msg = f"Model inference failed: {model_err}"
-
-        else: # Should not happen if zoomed_image fallback works, but as safety
+        else:
              classification_result = {"class": "Processing Error", "confidence": 0.0}
              if error_msg is None: error_msg = "final_image was None before inference"
              temp_path = None
-
 
         # --- Construct Final Result ---
         result_data = {
@@ -417,14 +365,13 @@ class NameTagQualityControl:
             "confidence": classification_result.get("confidence", 0.0),
             "timestamp": time.time(),
             "image_path": temp_path,
-            "image_data": final_image # This is rotated/cropped or zoomed
+            "image_data": final_image
         }
         if is_detection_fallback:
-             # Overwrite class/confidence if detection failed, even if inference ran
              result_data["class"] = "Detection Failed"
+             result_data["confidence"] = 0.0
         if error_msg:
              result_data["error"] = error_msg
-
 
         # --- Save JSON ---
         latest_result_path = os.path.join(self.results_dir, "latest_result.json")
@@ -439,10 +386,15 @@ class NameTagQualityControl:
 
 
     def close(self):
-        """Releases the camera resource."""
+        """Stops the capture thread and releases the camera resource."""
+        self.stop_capture() # Signal thread to stop
+        if self.capture_thread.is_alive():
+             self.capture_thread.join(timeout=1.0) # Wait for thread to finish
+             if self.capture_thread.is_alive():
+                  print("Warning: Capture thread did not stop gracefully.")
         if self.camera.isOpened():
             self.camera.release()
-        print("Camera released.")
+        print("Camera released and capture thread stopped.")
 
 
 if __name__ == "__main__":
@@ -465,7 +417,7 @@ if __name__ == "__main__":
         print("Live feed shows zoomed view with detected rectangle. Press Enter to capture, crop, rotate and inspect.")
         print("Press 'q' in any window to quit.")
         if AUTO_EXPOSURE:
-            print("Using Auto Exposure.")
+            print(f"Using Auto Exposure setting: 0.25 (Behavior depends on driver interpretation)")
         else:
             print(f"Using Manual Exposure setting: {MANUAL_EXPOSURE_STOP}")
 
@@ -474,7 +426,7 @@ if __name__ == "__main__":
 
             # --- Live Video Feed ---
             ret_live, live_frame_raw = qc.camera.read()
-            display_live_frame = None # Frame to actually display
+            display_live_frame = None  # Frame to actually display
 
             if ret_live and live_frame_raw is not None:
                 try:
@@ -482,29 +434,30 @@ if __name__ == "__main__":
                     zoomed_live_frame = qc._apply_zoom(live_frame_raw)
 
                     if zoomed_live_frame is not None:
-                         # Make a copy to draw on
-                         display_live_frame = zoomed_live_frame.copy()
+                        # Make a copy to draw on
+                        display_live_frame = zoomed_live_frame.copy()
 
-                         # 2. Detect rectangle info (bbox needed for drawing)
-                         live_rect_info = qc._detect_rectangle_info(zoomed_live_frame) # Uses updated epsilon
+                        # 2. Detect rectangle info (bbox needed for drawing)
+                        live_rect_info = qc._detect_rectangle_info(zoomed_live_frame)  # Uses updated epsilon
 
-                         # 3. Draw bounding box if coordinates are found
-                         if live_rect_info:
-                              min_rect = live_rect_info['min_rect']
-                              box = cv2.boxPoints(min_rect)  # Get the 4 corner points
-                              box = np.intp(box)  # Convert points to integer type for drawing
-                              cv2.drawContours(display_live_frame, [box], 0, (0, 255, 0), 2)
+                        # 3. Draw bounding box if coordinates are found
+                        if live_rect_info:
+                            min_rect = live_rect_info['min_rect']
+                            box = cv2.boxPoints(min_rect)  # Get the 4 corner points
+                            box = np.intp(box)  # Convert points to integer type for drawing
+                            cv2.drawContours(display_live_frame, [box], 0, (0, 255, 0), 2)
 
-                         # Display the frame (zoomed, potentially with box)
-                         cv2.imshow(live_window_name, display_live_frame)
+                        # Display the frame (zoomed, potentially with box)
+                        cv2.imshow(live_window_name, display_live_frame)
                     else:
-                         pass # Keep previous frame shown if zoom fails
+                        pass  # Keep previous frame shown if zoom fails
 
                 except Exception as live_process_err:
                     print(f"Error processing live frame: {live_process_err}")
             else:
                 print("Warning: Failed to grab frame for live feed.")
             # ---
+
 
             # --- Handle Key Press for Quit or Capture ---
             key = cv2.waitKey(1) & 0xFF
@@ -516,14 +469,9 @@ if __name__ == "__main__":
 
             elif key == 13: # Enter key - Trigger inspection
                 print("\nEnter pressed, inspecting tag (Capture -> Zoom -> Retry Detect -> Rotate/Crop)...")
-
-                # 1. Inspect the tag (handles all steps internally including retries and fallback)
                 result = qc.inspect_tag()
-
-                # Get the image data to display (could be rotated/cropped or zoomed fallback)
                 img_display = result.get("image_data")
 
-                # Update window title based on result
                 if "error" in result:
                      print(f"Inspection Error: {result['error']}")
                      window_title = f"Error: {result['error']}"
@@ -534,8 +482,6 @@ if __name__ == "__main__":
                      print(f"Displaying result: {result['class']} (Confidence: {result['confidence']:.2f})")
                      window_title = f"Result: {result['class']} (Conf: {result['confidence']:.2f})"
 
-
-                # Display the image (if any) and update title
                 if img_display is not None and img_display.size > 0:
                      try:
                           cv2.imshow(result_window_name, img_display)
@@ -545,9 +491,7 @@ if __name__ == "__main__":
                      except Exception as display_e:
                           print(f"Error displaying result image in '{result_window_name}': {display_e}")
                 else:
-                     # Handle case where even fallback image is missing
                      print("No image data available to display for result.")
-
 
             # --- End of Enter Key Handling ---
 

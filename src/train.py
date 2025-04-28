@@ -9,7 +9,12 @@ YOLOv12 only has detection pretrained, and it does not work on my PC.
 Build a new model has poor performance, likely due to small dataset.
 new model: high ceiling, low floor
 pretrained model: low ceiling, high floor
+
+This model needs good lighting.
 """
+
+
+
 from ultralytics import YOLO
 
 # Load a model
