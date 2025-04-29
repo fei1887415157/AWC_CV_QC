@@ -10,6 +10,10 @@ Build a new model has poor performance, likely due to small dataset.
 new model: high ceiling, low floor
 pretrained model: low ceiling, high floor
 
+Notes
+PyTorch, use below command to install if using CUDA:
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
 This model needs good lighting.
 """
 
@@ -20,7 +24,7 @@ from ultralytics import YOLO
 # Load a model
 #model = YOLO("yolo12n-cls.yaml")  # build a new model from YAML
 #model = YOLO("F:/JetBrains/PycharmProjects/AWC_CV_QC/src/runs/classify/train2/weights/best.pt")
-#model = YOLO("yolo11n-cls.pt")  # load a pretrained model (recommended for training)
+model = YOLO("yolo11n-cls.pt")  # load a pretrained model (recommended for training)
 
 # best to worst model: can not differentiate based on loss, need inference
 
