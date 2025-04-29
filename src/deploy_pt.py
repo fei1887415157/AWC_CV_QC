@@ -25,7 +25,7 @@ command = [
 # --- Platform-specific settings ---
 if platform.system() == "Windows":
     # Use '--windowed' for no console on Windows
-    command.append("--windowed")
+    #command.append("--windowed")
     # Data path separator for Windows
     data_separator = ";"
 else:
@@ -59,12 +59,11 @@ else:
 # These are often needed for libraries like PyTorch, OpenCV, etc.
 # Add more based on errors encountered during testing the built .exe
 hidden_imports = [
-    #"builtins",
-    #"ultralytics.engine.predictor",
-    #"ultralytics.engine.results",
-    #"torch",
-    #"torchvision", # Often needed with torch
-    #"cv2",
+    "ultralytics.engine.predictor",
+    "ultralytics.engine.results",
+    "torch",
+    "torchvision", # Often needed with torch
+
     # Add other potential hidden imports below
     # "numpy",
     # "scipy",

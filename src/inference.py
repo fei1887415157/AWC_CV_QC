@@ -5,7 +5,6 @@ import json
 import os
 import traceback # For detailed error printing
 import numpy as np
-import math # For rotation calculations
 import threading # For dedicated capture thread
 from queue import Queue # For thread-safe frame passing
 import sys
@@ -13,7 +12,7 @@ import sys
 
 
 # --- Global Configuration ---
-MODEL_PATH = "runs/classify/11s/weights/best.pt" # Path to your trained .pt model
+MODEL_PATH = "F:/JetBrains/PycharmProjects/AWC_CV_QC/src/runs/classify/11s/weights/best.pt" # Path to your trained .pt model
 CAMERA_ID = 0 # Change if you have multiple cameras
 REQUESTED_WIDTH = 1920 # camera width
 REQUESTED_HEIGHT = 1080 # camera height
@@ -187,7 +186,7 @@ class NameTagQualityControl:
                 if not is_valid_aspect_ratio: continue
                 # Check if contour is reasonably within frame bounds (helps filter noise near edges)
                 # margin = 0.05 # 5% margin
-                # if x < margin * frame_shape[1] or y < margin * frame_shape[0] or \
+                # if x < margin * frame_shape[1] or y < margin * frame_shape[0] or /
                 #    (x + w) > (1 - margin) * frame_shape[1] or (y + h) > (1 - margin) * frame_shape[0]:
                 #      continue
 
@@ -418,7 +417,7 @@ if __name__ == "__main__":
     try:
         qc = NameTagQualityControl(MODEL_PATH, camera_id=CAMERA_ID, zoom_factor=ZOOM_FACTOR)
 
-        print("\nStarting inspection loop.")
+        print("/nStarting inspection loop.")
         print("Live feed shows zoomed view with detected rectangle. Press Enter to capture, crop, rotate and inspect.")
         print("Press 'q' in any window to quit.")
         if AUTO_EXPOSURE:
@@ -473,7 +472,7 @@ if __name__ == "__main__":
                 break
 
             elif key == 13: # Enter key - Trigger inspection
-                print("\nEnter pressed, inspecting tag (Capture -> Zoom -> Retry Detect -> Rotate/Crop)...")
+                print("/nEnter pressed, inspecting tag (Capture -> Zoom -> Retry Detect -> Rotate/Crop)...")
                 result = qc.inspect_tag()
                 img_display = result.get("image_data")
 
@@ -501,10 +500,10 @@ if __name__ == "__main__":
             # --- End of Enter Key Handling ---
 
     except Exception as e:
-        print(f"\nA critical error occurred: {e}")
+        print(f"/nA critical error occurred: {e}")
         traceback.print_exc()
     finally:
-        print("\nCleaning up...")
+        print("/nCleaning up...")
         if qc is not None:
             qc.close()
         cv2.destroyAllWindows()
