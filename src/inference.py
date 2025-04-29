@@ -8,6 +8,9 @@ import numpy as np
 import math # For rotation calculations
 import threading # For dedicated capture thread
 from queue import Queue # For thread-safe frame passing
+import sys
+
+
 
 # --- Global Configuration ---
 MODEL_PATH = "runs/classify/11s/weights/best.pt" # Path to your trained .pt model
@@ -24,6 +27,8 @@ MIN_ASPECT_RATIO = 0.2
 MAX_ASPECT_RATIO = 5.0
 MORPH_KERNEL_SIZE = (5, 5) # Morphological kernel size
 # ---
+
+
 
 class NameTagQualityControl:
     def __init__(self, model_path, camera_id=0, zoom_factor=1):
@@ -401,7 +406,7 @@ if __name__ == "__main__":
     # --- Check if model file exists ---
     if not os.path.exists(MODEL_PATH):
         print(f"Error: Model file not found at {MODEL_PATH}")
-        exit()
+        sys.exit()
     # ---
 
     qc = None
