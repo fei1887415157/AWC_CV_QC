@@ -23,16 +23,17 @@ command = [
 ]
 
 # --- Platform-specific settings ---
-if platform.system() == "Windows":
+# Ensure console is enabled for debugging output
+command.append("--console") # Explicitly keep console enabled
+data_separator = ";" if platform.system() == "Windows" else ":"
+# if platform.system() == "Windows":
     # Use '--windowed' for no console on Windows
-    #command.append("--windowed")
-    # Data path separator for Windows
-    data_separator = ";"
-else:
+    #command.append("--windowed") # Keep commented out for debugging
+    # data_separator = ";"
+# else:
     # Use '--noconsole' for no console on macOS/Linux (if desired)
-    # command.append("--noconsole") # Uncomment if you don't want a console on Mac/Linux
-    # Data path separator for macOS/Linux
-    data_separator = ":"
+    # command.append("--noconsole") # Keep commented out for debugging
+    # data_separator = ":"
 
 # --- Add Data Files ---
 # Ensure the model file exists before adding it
@@ -63,9 +64,9 @@ hidden_imports = [
     "ultralytics.engine.results",
     "torch",
     "torchvision", # Often needed with torch
-
     # Add other potential hidden imports below
-    # "numpy",
+    "numpy", # Often implicitly required
+    "cv2",   # If your inference script uses OpenCV
     # "scipy",
     # "pandas",
     # "PIL", # Pillow
@@ -76,14 +77,16 @@ for imp in hidden_imports:
 
 
 # --- Add other PyInstaller options if needed ---
-# command.append("--onefile") # Uncomment for single-file executable (debug with one-dir first)
-# command.append("--clean") # Clean PyInstaller cache and remove temporary files before building
-# command.append("--log-level=DEBUG") # For more verbose output during build
+command.append("--clean") # Clean PyInstaller cache and remove temporary files before building
+# !! Enable verbose runtime debugging !!
+command.append("--debug=all")
+# command.append("--log-level=DEBUG") # Build-time debug logging (less critical now)
 
+# command.append("--onefile") # Uncomment for single-file executable (debug with one-dir first)
 
 
 # --- Execute the Command ---
-print("Running PyInstaller with command:")
+print("Running PyInstaller with command (Runtime Debug Enabled):")
 # Print the command in a more readable format
 print(" ".join(f'"{arg}"' if " " in arg else arg for arg in command))
 print("This will take a few minutes.")
@@ -99,6 +102,11 @@ try:
     print(process.stderr) # Stderr might contain warnings even on success
     print("-" * 30)
     print(f"PyInstaller build completed successfully! Check the 'dist/{APP_NAME}' folder.")
+    print("\n" + "="*40)
+    print("IMPORTANT: The executable now includes runtime debug messages.")
+    print("Run it from the command line (cmd) to see the verbose output.")
+    print("="*40 + "\n")
+
 
 except FileNotFoundError:
     print("Error: PyInstaller command not found.")
