@@ -1,17 +1,5 @@
-import subprocess
-import sys
-import os
-import platform # To handle platform-specific path separators for --add-data
-import multiprocessing # To potentially get core count, though PyInstaller handles internal usage
-
-# --- Configuration ---
-# !! MODIFY THESE VARIABLES !!
-APP_NAME = "YourAppNameTensorRT"  # The desired name for your application executable
-ENTRY_SCRIPT = "your_script_tensorrt.py" # The main Python script (modified to use TensorRT engine)
-# Use the correct extension for your TensorRT engine file (.engine or .plan)
-MODEL_FILE = "your_model.engine" # The path to your TensorRT engine file
-# Add other data files or assets here if needed, following the same pattern
-# OTHER_ASSETS = [("path/to/your/font.ttf", ".")] # Example: (source, destination_in_bundle)
+"""
+Not Ready.
 
 # --- !! IMPORTANT TENSORRT NOTE !! ---
 # TensorRT executables created with PyInstaller have a major dependency:
@@ -20,6 +8,24 @@ MODEL_FILE = "your_model.engine" # The path to your TensorRT engine file
 # with the engine file and the TensorRT Python library version used.
 # PyInstaller bundles the Python code and the .engine file, NOT the core
 # TensorRT runtime itself.
+"""
+
+
+
+import subprocess
+import sys
+import os
+import platform     # To handle platform-specific path separators for --add-data
+
+
+
+# --- Configuration ---
+APP_NAME = "AWC CV QC TensorRT"  # The desired name for your application executable
+ENTRY_SCRIPT = "F:/JetBrains/PycharmProjects/AWC_CV_QC/src/inference.py" # The main Python script for your application
+MODEL_FILE = "runs/classify/11s/weights/best.engine" # The path to your model file (relative to this script or absolute)
+# OTHER_ASSETS = [("path/to/your/font.ttf", ".")] # Example: (source, destination_in_bundle)
+
+
 
 # --- PyInstaller Options ---
 # Base command

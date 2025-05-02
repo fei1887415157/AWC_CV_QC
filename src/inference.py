@@ -3,28 +3,28 @@ from ultralytics import YOLO
 import time
 import json
 import os
-import traceback # For detailed error printing
+import traceback  # For detailed error printing
 import numpy as np
-import threading # For dedicated capture thread
-from queue import Queue # For thread-safe frame passing
+import threading  # For dedicated capture thread
+from queue import Queue  # For thread-safe frame passing
 import sys
 
 
 
 # --- Global Configuration ---
 MODEL_PATH = "F:/JetBrains/PycharmProjects/AWC_CV_QC/src/runs/classify/11s/weights/best.pt" # Path to your trained .pt model
-CAMERA_ID = 0 # Change if you have multiple cameras
-REQUESTED_WIDTH = 1920 # camera width
-REQUESTED_HEIGHT = 1080 # camera height
-ZOOM_FACTOR = 3 # 1 is no zoom
+CAMERA_ID = 0  # Change if you have multiple cameras
+REQUESTED_WIDTH = 1920  # camera width
+REQUESTED_HEIGHT = 1080  # camera height
+ZOOM_FACTOR = 3  # 1 is no zoom
 AUTO_EXPOSURE = False
 MANUAL_EXPOSURE_STOP = -5
-MIN_RECT_AREA = 10000 # Minimum pixel area
-RECT_DETECT_RETRIES = 100 # Number of times to retry
-APPROX_POLY_EPSILON_FACTOR = 0.02 # amount of distortion due to camera
+MIN_RECT_AREA = 10000  # Minimum pixel area
+RECT_DETECT_RETRIES = 100  # Number of times to retry
+APPROX_POLY_EPSILON_FACTOR = 0.02  # amount of distortion due to camera
 MIN_ASPECT_RATIO = 0.2
 MAX_ASPECT_RATIO = 5.0
-MORPH_KERNEL_SIZE = (5, 5) # Morphological kernel size
+MORPH_KERNEL_SIZE = (5, 5)  # Morphological kernel size
 # ---
 
 
@@ -338,30 +338,32 @@ class NameTagQualityControl:
             timestamp_str = f"{int(time.time())}"
             temp_path = os.path.join(self.results_dir, f"temp_{timestamp_str}.jpg")
             try:
-                 save_success = cv2.imwrite(temp_path, final_image)
-                 if not save_success: temp_path = None
+                save_success = cv2.imwrite(temp_path, final_image)
+                if not save_success: temp_path = None
             except Exception: temp_path = None
             try:
-                 source_for_model = final_image if temp_path is None else temp_path
-                 results = self.model(source=source_for_model)
-                 if not results or not hasattr(results[0], 'probs') or results[0].probs is None:
-                      classification_result = {"class": "Inference Error", "confidence": 0.0}
-                      if error_msg is None: error_msg = "Inference failed or returned no probabilities"
-                 else:
-                      predicted_class_index = results[0].probs.top1
-                      confidence = float(results[0].probs.top1conf)
-                      if results[0].names and predicted_class_index < len(results[0].names):
-                           class_name = results[0].names[predicted_class_index]
-                      else: class_name = "Unknown"
-                      classification_result = {"class": class_name, "confidence": confidence}
+                source_for_model = final_image if temp_path is None else temp_path
+                results = self.model(source=source_for_model)
+                if not results or not hasattr(results[0], 'probs') or results[0].probs is None:
+                    classification_result = {"class": "Inference Error", "confidence": 0.0}
+                    if error_msg is None: error_msg = "Inference failed or returned no probabilities"
+                else:
+                    predicted_class_index = results[0].probs.top1
+                    confidence = float(results[0].probs.top1conf)
+                    if results[0].names and predicted_class_index < len(results[0].names):
+                        class_name = results[0].names[predicted_class_index]
+                    else:
+                        class_name = "Unknown"
+                    classification_result = {"class": class_name, "confidence": confidence}
+
             except Exception as model_err:
-                 print(f"Error during model inference: {model_err}")
-                 classification_result = {"class": "Inference Error", "confidence": 0.0}
-                 if error_msg is None: error_msg = f"Model inference failed: {model_err}"
+                print(f"Error during model inference: {model_err}")
+                classification_result = {"class": "Inference Error", "confidence": 0.0}
+                if error_msg is None: error_msg = f"Model inference failed: {model_err}"
         else:
-             classification_result = {"class": "Processing Error", "confidence": 0.0}
-             if error_msg is None: error_msg = "final_image was None before inference"
-             temp_path = None
+            classification_result = {"class": "Processing Error", "confidence": 0.0}
+            if error_msg is None: error_msg = "final_image was None before inference"
+            temp_path = None
 
         # --- Construct Final Result ---
         result_data = {
@@ -372,10 +374,10 @@ class NameTagQualityControl:
             "image_data": final_image
         }
         if is_detection_fallback:
-             result_data["class"] = "Detection Failed"
-             result_data["confidence"] = 0.0
+            result_data["class"] = "Detection Failed"
+            result_data["confidence"] = 0.0
         if error_msg:
-             result_data["error"] = error_msg
+            result_data["error"] = error_msg
 
         # --- Save JSON ---
         latest_result_path = os.path.join(self.results_dir, "latest_result.json")
@@ -383,8 +385,8 @@ class NameTagQualityControl:
             json_data = {k: v for k, v in result_data.items() if k != 'image_data'}
             with open(latest_result_path, "w") as f:
                 json.dump(json_data, f, indent=4)
-        except IOError as e:
-            print(f"Error writing results to {latest_result_path}: {e}")
+        except IOError as e1:
+            print(f"Error writing results to {latest_result_path}: {e1}")
 
         return result_data
 

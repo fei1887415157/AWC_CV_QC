@@ -1,7 +1,7 @@
 import subprocess
 import sys
 import os
-import platform # To handle platform-specific path separators for --add-data
+import platform     # To handle platform-specific path separators for --add-data
 
 
 
@@ -9,31 +9,23 @@ import platform # To handle platform-specific path separators for --add-data
 APP_NAME = "AWC CV QC PyTorch"  # The desired name for your application executable
 ENTRY_SCRIPT = "F:/JetBrains/PycharmProjects/AWC_CV_QC/src/inference.py" # The main Python script for your application
 MODEL_FILE = "runs/classify/11s/weights/best.pt" # The path to your model file (relative to this script or absolute)
-# OTHER_ASSETS = [("path/to/your/font.ttf", ".")] # Example: (source, destination_in_bundle)
+FORMAT = "ONNX"
+#FORMAT = "PyTorch"
 
 
 
 # --- PyInstaller Options ---
 # Base command
-command = [
-    sys.executable,  # Use the current Python interpreter to run PyInstaller module
-    "-m", "PyInstaller",
-    ENTRY_SCRIPT,
-    "--name", APP_NAME,
-]
+command = [sys.executable, "-m", "PyInstaller", ENTRY_SCRIPT, "--name",
+           APP_NAME, "--console", "--clean"]
+
+
 
 # --- Platform-specific settings ---
 # Ensure console is enabled for debugging output
-command.append("--console") # Explicitly keep console enabled
 data_separator = ";" if platform.system() == "Windows" else ":"
-# if platform.system() == "Windows":
-    # Use '--windowed' for no console on Windows
-    #command.append("--windowed") # Keep commented out for debugging
-    # data_separator = ";"
-# else:
-    # Use '--noconsole' for no console on macOS/Linux (if desired)
-    # command.append("--noconsole") # Keep commented out for debugging
-    # data_separator = ":"
+
+
 
 # --- Add Data Files ---
 # Ensure the model file exists before adding it
@@ -71,18 +63,27 @@ hidden_imports = [
     # "pandas",
     # "PIL", # Pillow
 ]
+
+if FORMAT == "ONNX":
+    hidden_imports.append("onnxruntime")
+    print("Using ONNX Format.")
+elif FORMAT == "PyTorch":
+    print("Using PyTorch Format.")
+else:
+    sys.exit(1)
+
 for imp in hidden_imports:
     command.append(f"--hidden-import={imp}")
 
 
 
 # --- Add other PyInstaller options if needed ---
-command.append("--clean") # Clean PyInstaller cache and remove temporary files before building
 # !! Enable verbose runtime debugging !!
-command.append("--debug=all")
+#command.append("--debug=all")
 # command.append("--log-level=DEBUG") # Build-time debug logging (less critical now)
 
 # command.append("--onefile") # Uncomment for single-file executable (debug with one-dir first)
+
 
 
 # --- Execute the Command ---
@@ -104,15 +105,13 @@ try:
     print(f"PyInstaller build completed successfully! Check the 'dist/{APP_NAME}' folder.")
     print("\n" + "="*40)
     print("IMPORTANT: The executable now includes runtime debug messages.")
-    print("Run it from the command line (cmd) to see the verbose output.")
     print("="*40 + "\n")
-
 
 except FileNotFoundError:
     print("Error: PyInstaller command not found.")
     print("Make sure PyInstaller is installed in your Python environment:")
     print(f"  pip install pyinstaller")
-    sys.exit(1)
+    sys.exit(2)
 
 except subprocess.CalledProcessError as e:
     # This catches errors during the PyInstaller execution
@@ -123,9 +122,9 @@ except subprocess.CalledProcessError as e:
     print(e.stderr)
     print("-" * 30)
     print("Build failed. Check the errors above, especially for missing imports or data files.")
-    sys.exit(1)
+    sys.exit(3)
 
 except Exception as e:
     # Catch any other unexpected errors
     print(f"An unexpected error occurred: {e}")
-    sys.exit(1)
+    sys.exit(4)
