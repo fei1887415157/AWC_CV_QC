@@ -8,6 +8,7 @@ import platform     # To handle platform-specific path separators for --add-data
 # --- Configuration ---
 APP_NAME = "AWC CV QC PyTorch"  # The desired name for your application executable
 ENTRY_SCRIPT = "F:/JetBrains/PycharmProjects/AWC_CV_QC/src/inference.py" # The main Python script for your application
+#MODEL_FILE = "runs/classify/11s/weights/best.onnx"
 MODEL_FILE = "runs/classify/11s/weights/best.pt" # The path to your model file (relative to this script or absolute)
 #FORMAT = "ONNX"
 FORMAT = "PyTorch"
