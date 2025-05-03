@@ -3,7 +3,7 @@ import sys
 import os
 import platform # To handle platform-specific path separators for --add-data
 
-
+#test
 
 # --- Configuration ---
 APP_NAME = "AWC CV QC"  # The desired name for your application executable
