@@ -5,11 +5,12 @@ import os
 import traceback  # For detailed error printing
 import numpy as np
 import threading  # For dedicated capture thread
-from queue import Queue  # For thread-safe frame passing
+# Need Queue and Empty exception
+from queue import Queue, Empty
 import sys
 import json
-from flask import Flask
-
+# Import jsonify from Flask
+from flask import Flask, jsonify
 
 
 # --- Global Configuration ---
@@ -33,12 +34,15 @@ HOST = "127.0.0.1"
 PORT = 2000
 # ---
 
+# --- Global variable for Quality Control object ---
+# This allows the Flask route to access the qc instance created in __main__
+qc = None
+# ---
 
 
 def set_model_path(path):
     global MODEL_PATH
     MODEL_PATH = path
-
 
 
 class NameTagQualityControl:
@@ -54,22 +58,10 @@ class NameTagQualityControl:
         # Option 1: Default backend
         self.camera = cv2.VideoCapture(camera_id)
 
-        # Option 2: Try DirectShow backend (Windows specific) - Uncomment if on Windows and default has issues
-        # print("Trying DirectShow backend (cv2.CAP_DSHOW)...")
-        # self.camera = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
-
-        # Option 3: Try Media Foundation backend (Windows specific) - Uncomment if on Windows
-        # print("Trying Media Foundation backend (cv2.CAP_MSMF)...")
-        # self.camera = cv2.VideoCapture(camera_id, cv2.CAP_MSMF)
-
-        # Option 4: Try AVFoundation backend (macOS specific) - Uncomment if on macOS
-        # print("Trying AVFoundation backend (cv2.CAP_AVFOUNDATION)...")
-        # self.camera = cv2.VideoCapture(camera_id, cv2.CAP_AVFOUNDATION)
-
+        # Add other backend options here if needed (DSHOW, MSMF, AVFOUNDATION)
+        # ...
 
         if not self.camera.isOpened():
-             # If the chosen backend failed, maybe try the default as a last resort?
-             # Or just raise the exception.
              raise Exception(f"Error: Could not open camera with ID {camera_id} using the selected backend.")
         print(f"Camera backend API name: {self.camera.getBackendName()}")
         # ---
@@ -100,8 +92,6 @@ class NameTagQualityControl:
         print(f"Actual Exposure value: {self.camera.get(cv2.CAP_PROP_EXPOSURE)}")
         # --- End Camera Settings ---
 
-        self.results_dir = "results"
-        os.makedirs(self.results_dir, exist_ok=True)
         self.zoom_factor = zoom_factor
 
         # --- Threaded Capture Setup ---
@@ -120,353 +110,496 @@ class NameTagQualityControl:
         while self.capture_active:
             ret, frame = self.camera.read()
             if ret and frame is not None:
-                # Optional: Basic frame validation (e.g., check dimensions, mean intensity)
-                # if frame.shape[0] != REQUESTED_HEIGHT or frame.shape[1] != REQUESTED_WIDTH:
-                #    print(f"Warning: Captured frame has unexpected dimensions: {frame.shape}")
-                #    error_counter += 1
-                #    continue # Skip potentially corrupt frame
-
                 try:
+                    # Ensure the queue is not full before putting (non-blocking)
                     if self.capture_queue.full():
-                        self.capture_queue.get_nowait() # Discard older frame
-                    self.capture_queue.put(frame)
+                        self.capture_queue.get_nowait() # Discard older frame if full
+                    self.capture_queue.put(frame) # Put the new frame
                     frame_counter += 1
-                    if frame_counter % 300 == 0: # Print status occasionally
-                         print(f"Capture thread status: {frame_counter} frames captured, {error_counter} errors.")
+                    # Optional: Reduce frequency of status printing
+                    # if frame_counter % 1000 == 0:
+                    #      print(f"Capture thread status: {frame_counter} frames captured, {error_counter} errors.")
 
+                except Empty: # Catch Empty exception from get_nowait
+                    # This case should ideally not happen if .full() check is done first,
+                    # but good to handle defensively.
+                    print("Warning: get_nowait() called on an empty queue unexpectedly.")
+                    error_counter += 1
                 except Exception as e:
                      print(f"Error putting frame in queue: {e}")
                      error_counter += 1
             else:
-                # print("Warning: camera.read() failed in capture thread.") # Reduce noise
+                # Error to read frame
                 error_counter += 1
                 if error_counter > 100 and error_counter % 50 == 0: # Log if many consecutive errors
                      print(f"Warning: {error_counter} consecutive camera read failures!")
-                time.sleep(0.05) # Increase sleep slightly on read failure
+                time.sleep(0.05) # Wait a bit before retrying camera read
         print("Capture loop stopped.")
 
     def stop_capture(self):
         """Signals the capture thread to stop."""
         print("Stopping capture thread...")
         self.capture_active = False
+        # Attempt to clear the queue to potentially unblock the put() call if thread is stuck
+        while not self.capture_queue.empty():
+            try:
+                self.capture_queue.get_nowait()
+            except Empty:
+                break
 
     def get_latest_frame(self):
         """Gets the latest frame from the capture queue."""
         try:
-            return self.capture_queue.get(timeout=0.5) # Increased timeout slightly
-        except Exception:
+            # Use a timeout to prevent blocking indefinitely if the queue is empty
+            return self.capture_queue.get(timeout=0.5)
+        except Empty: # Use specific exception
             # print("Warning: Capture queue empty or timeout.") # Reduce noise
+            return None
+        except Exception as e: # Catch other potential errors
+            print(f"Error getting frame from queue: {e}")
             return None
 
 
     def _apply_zoom(self, frame):
         """Applies center zoom to the frame."""
         if frame is None or frame.size == 0: return None
-        if self.zoom_factor <= 1.0: return frame
+        if self.zoom_factor <= 1.0: return frame # No zoom needed
         h, w = frame.shape[:2]
+        # Calculate center
         center_x, center_y = w // 2, h // 2
+        # Calculate new dimensions
         new_w = int(w / self.zoom_factor)
         new_h = int(h / self.zoom_factor)
+        # Calculate top-left corner, ensuring it's within bounds
         x1 = max(0, center_x - new_w // 2)
         y1 = max(0, center_y - new_h // 2)
+        # Calculate bottom-right corner, ensuring it's within bounds
         x2 = min(w, x1 + new_w)
         y2 = min(h, y1 + new_h)
+        # Check for valid crop dimensions
         if x1 >= x2 or y1 >= y2: return None
+        # Perform the crop (zoom)
         zoomed_frame = frame[y1:y2, x1:x2]
+        # Final check if the zoomed frame is valid
         if zoomed_frame.size == 0: return None
         return zoomed_frame
 
     def _find_largest_rectangle_contour(self, contours, frame_shape):
-        """Finds the largest contour that approximates to 4 vertices."""
+        """Finds the largest contour that approximates to 4 vertices and meets criteria."""
         largest_rectangle_contour = None
         max_area = 0
+
         for contour in contours:
+            # Calculate contour area
             area = cv2.contourArea(contour)
+            # Filter small contours
             if area < MIN_RECT_AREA: continue
+
+            # Calculate perimeter
             perimeter = cv2.arcLength(contour, True)
-            if perimeter <= 0: continue # Avoid division by zero
+            if perimeter <= 0: continue # Avoid division by zero in approxPolyDP
+
+            # Approximate the contour shape
             approx = cv2.approxPolyDP(contour, APPROX_POLY_EPSILON_FACTOR * perimeter, True)
+
+            # Check if the approximation has 4 vertices (is a quadrilateral)
             if len(approx) == 4:
-                # Check convexity and aspect ratio
+                # Check if the quadrilateral is convex
                 if not cv2.isContourConvex(approx): continue
+
+                # Get the bounding box to check aspect ratio
                 x, y, w, h = cv2.boundingRect(approx)
-                if w <= 0 or h <= 0: continue
+                if w <= 0 or h <= 0: continue # Invalid dimensions
+
+                # Calculate aspect ratios
                 aspect_ratio = float(w) / h if h > 0 else 0
                 inv_aspect_ratio = float(h) / w if w > 0 else 0
+
+                # Check if aspect ratio is within the allowed range (either orientation)
                 is_valid_aspect_ratio = (MIN_ASPECT_RATIO < aspect_ratio < MAX_ASPECT_RATIO) or \
                                         (MIN_ASPECT_RATIO < inv_aspect_ratio < MAX_ASPECT_RATIO)
                 if not is_valid_aspect_ratio: continue
-                # Check if contour is reasonably within frame bounds (helps filter noise near edges)
-                # margin = 0.05 # 5% margin
-                # if x < margin * frame_shape[1] or y < margin * frame_shape[0] or /
-                #    (x + w) > (1 - margin) * frame_shape[1] or (y + h) > (1 - margin) * frame_shape[0]:
-                #      continue
 
+                # If this contour is larger than the previous largest valid one, update
                 if area > max_area:
                     max_area = area
                     largest_rectangle_contour = contour
+
         return largest_rectangle_contour
 
     def _detect_rectangle_info(self, frame):
-        """Detects the largest valid rectangle contour."""
-        if frame is None or frame.size == 0: return None
+        """Detects the largest valid rectangle contour in the frame."""
+        if frame is None or frame.size == 0: return None # Check for valid input
+
         try:
+            # Convert to grayscale
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            # Experiment with blur kernel size
-            blurred = cv2.GaussianBlur(gray, (7, 7), 0) # Was (5,5)
-            # Experiment with Canny thresholds
-            edges = cv2.Canny(blurred, 30, 100) # Lowered thresholds slightly, was 50, 150
-            # Experiment with morphological operations
+            # Apply Gaussian blur to reduce noise
+            blurred = cv2.GaussianBlur(gray, (7, 7), 0) # Slightly larger kernel might help
+            # Apply Canny edge detection
+            edges = cv2.Canny(blurred, 30, 100) # Adjusted thresholds
+            # Define a morphological kernel
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, MORPH_KERNEL_SIZE)
-            # Dilate then Erode (Close) helps close gaps in edges
+            # Apply Morphological Closing (dilate then erode) to close gaps in edges
             closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-            # Optional: Erode then Dilate (Open) helps remove small noise
-            # opened_edges = cv2.morphologyEx(closed_edges, cv2.MORPH_OPEN, kernel)
-            edges_processed = closed_edges # Use the closed edges
+            # Use the closed edges for contour finding
+            edges_processed = closed_edges
         except cv2.error as e:
             print(f"OpenCV error during preprocessing: {e}")
             return None
         except Exception as e:
             print(f"Unexpected error during preprocessing: {e}")
+            traceback.print_exc() # Print traceback for unexpected errors
             return None
 
+        # Find contours in the processed edge image
         contours, _ = cv2.findContours(edges_processed.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # If no contours are found, return None
         if not contours: return None
 
+        # Find the largest valid rectangle among the contours
         largest_rect_contour = self._find_largest_rectangle_contour(contours, frame.shape)
+
+        # If no valid rectangle contour is found, return None
         if largest_rect_contour is None: return None
 
-        bbox = cv2.boundingRect(largest_rect_contour)
-        min_rect = cv2.minAreaRect(largest_rect_contour)
+        # If a valid rectangle is found, calculate its bounding box and minimum area rectangle
+        bbox = cv2.boundingRect(largest_rect_contour) # Axis-aligned bounding box
+        min_rect = cv2.minAreaRect(largest_rect_contour) # Minimum area (rotated) bounding box
+
+        # Return the information
         return {'bbox': bbox, 'min_rect': min_rect}
 
     def _rotate_and_crop(self, frame, min_rect):
-         """Rotates and crops the rectangle."""
+         """Rotates the frame to align the min_rect and crops it."""
          if frame is None or min_rect is None: return None
-         center, size, angle = min_rect
-         width, height = size
-         # Adjust angle interpretation if necessary (common minAreaRect quirk)
-         # If angle is close to -90, swap width/height and adjust angle
+
+         # Unpack the minimum area rectangle parameters
+         center, (width, height), angle = min_rect
+
+         # Adjust angle and dimensions if necessary
          if angle < -45:
               angle += 90.0
               width, height = height, width # Swap width and height
 
-         M = cv2.getRotationMatrix2D(center, angle, 1.0)
+         # Get the rotation matrix
+         M = cv2.getRotationMatrix2D(center, angle, 1.0) # angle, scale=1.0
+
          try:
-              # Calculate bounding box of rotated rectangle to determine output size
+              # Calculate the bounding box of the rotated rectangle
               box = cv2.boxPoints(min_rect)
               pts = np.intp(box) # Use np.intp for potentially large coordinates
+
               x_coords = pts[:, 0]
               y_coords = pts[:, 1]
-              rect_w = int(np.linalg.norm(pts[0] - pts[1]))
-              rect_h = int(np.linalg.norm(pts[1] - pts[2]))
-              # Use a slightly larger size for warpAffine to avoid clipping corners
-              warp_w = int(max(rect_w, rect_h) * 1.2)
-              warp_h = warp_w
+              rotated_bbox_w = int(np.max(x_coords) - np.min(x_coords))
+              rotated_bbox_h = int(np.max(y_coords) - np.min(y_coords))
 
-              # Adjust rotation matrix to center the rectangle in the output
+              # Use the dimensions of the rotated bounding box for warp size
+              warp_w = rotated_bbox_w
+              warp_h = rotated_bbox_h
+              if warp_w <= 0 or warp_h <= 0: raise Exception("Invalid warp dimensions calculated")
+
+              # Adjust the rotation matrix translation component to center the rectangle
               M[0, 2] += (warp_w / 2) - center[0]
               M[1, 2] += (warp_h / 2) - center[1]
 
-              # Perform rotation into the calculated size
+              # Perform the affine transformation
               warped = cv2.warpAffine(frame, M, (warp_w, warp_h), flags=cv2.INTER_CUBIC)
               if warped is None: raise Exception("warpAffine returned None")
 
          except Exception as e:
               print(f"Error during warpAffine: {e}")
-              return None
+              traceback.print_exc()
+              return None # Return None if rotation fails
 
          # Crop the final rectangle from the center of the warped image
          crop_width = int(round(width))
          crop_height = int(round(height))
-         if crop_width <= 0 or crop_height <= 0: return None
+         if crop_width <= 0 or crop_height <= 0: return None # Invalid crop dimensions
 
          try:
-              # Calculate the center in the *new* warped image coordinates
+              # Calculate the center of the *warped* image
               new_center = (warp_w / 2, warp_h / 2)
+              # Crop the rectangle using getRectSubPix
               cropped = cv2.getRectSubPix(warped, (crop_width, crop_height), new_center)
               if cropped is None: raise Exception("getRectSubPix returned None")
          except Exception as e:
               print(f"Error during getRectSubPix: {e}")
-              return None
+              traceback.print_exc()
+              return None # Return None if cropping fails
 
-         # Final check on aspect ratio (sometimes needed if initial angle adjustment wasn't perfect)
-         if crop_height > crop_width * 1.2:
+         # Final check on aspect ratio
+         if crop_height > crop_width * 1.2: # Add a tolerance
               print("Rotating final cropped image by 90 degrees.")
               cropped = cv2.rotate(cropped, cv2.ROTATE_90_CLOCKWISE)
 
+         # Final check for empty result
          if cropped.size == 0: return None
          return cropped
 
     def inspect_tag(self):
         """
-        Gets latest frame, zooms, retries rectangle detection, rotates/crops,
-        runs inference. Falls back to zoomed image if detection fails.
+        Captures frame, processes, runs inference. Returns a dictionary with
+        status, class, confidence, and image_data, structured as requested.
         """
-        # 1. Get Latest Raw Image from queue
+        # Initialize default return structure for error cases
+        result_data = {
+            "status": "Error",
+            "error_message": "",
+            "class": "",
+            "confidence": 0.0,
+            "image_data": None
+        }
+        final_image = None # Define final_image early
+
+        # 1. Get Latest Raw Image
         raw_image = self.get_latest_frame()
         if raw_image is None:
              print("Capture queue was empty, attempting direct read...")
              ret_direct, raw_image = self.camera.read()
              if not ret_direct or raw_image is None:
-                 return {"error": "Image capture failed (queue empty & direct read failed)", "image_data": None}
+                 print("Error: Image capture failed (queue empty & direct read failed)")
+                 result_data["error_message"] = "Image capture failed" # Optional: add error detail
+                 return result_data # Return default error structure
 
+        # Work on a copy
         raw_image = raw_image.copy()
+        result_data["image_data"] = raw_image # Store raw initially, might be overwritten
+
+
 
         # 2. Apply Zoom
         zoomed_image = self._apply_zoom(raw_image)
         if zoomed_image is None:
-             return {"error": "Zoom processing failed", "image_data": raw_image}
+             print("Warning: Zoom processing failed.")
+             # Image data remains the raw_image stored earlier
+             result_data["status"] = "Error"
+             result_data["error_message"] = "Zoom failed"
+             return result_data # Return structure indicating processing issue
+
+        result_data["image_data"] = zoomed_image # Update image data to zoomed
 
         # 3. Detect Rectangle Coordinates (with Retries)
         rect_info = None
         for attempt in range(RECT_DETECT_RETRIES):
              rect_info = self._detect_rectangle_info(zoomed_image.copy())
-             if rect_info: break
+             if rect_info:
+                 break
+        # else: # Loop completed without break (detection failed)
+             # No need to do anything here, rect_info remains None
 
         # --- Process based on detection result ---
-        final_image = None
-        is_detection_fallback = False
-        error_msg = None
-
         if rect_info:
-            # 4. Rotate and Crop if rectangle detected
+            # 4. Rotate and Crop if rectangle was detected successfully
             final_image = self._rotate_and_crop(zoomed_image, rect_info['min_rect'])
             if final_image is None:
-                 print("Warning: Rotation/Cropping failed. Falling back to zoomed image.")
-                 final_image = zoomed_image
-                 is_detection_fallback = True
-                 error_msg = "Rotation/Cropping failed"
+                 # Rotation/cropping failed, fall back to the zoomed image
+                 print("Warning: Rotation/Cropping failed. Using zoomed image for inference.")
+                 final_image = zoomed_image # Use zoomed as fallback
+                 result_data["status"] = "Error"
+                 result_data["error_message"] = "Rotation/Cropping failed"
+            else:
+                 # Cropping successful, update image data
+                 result_data["image_data"] = final_image
         else:
-            # 5. Fallback to zoomed image if detection failed
-            final_image = zoomed_image
-            is_detection_fallback = True
-            error_msg = f"Rectangle detection failed after {RECT_DETECT_RETRIES} retries"
-
+            # Detection failed after retries, use the zoomed image for potential inference
+            print(f"Warning: Rectangle detection failed after {RECT_DETECT_RETRIES} retries. Using zoomed image.")
+            final_image = zoomed_image # Use zoomed image
+            result_data["status"] = "Failed"
+            result_data["error_message"] = "Detection failed"
 
         # --- Inference ---
-        classification_result = {}
-        if final_image is not None:
-            timestamp_str = f"{int(time.time())}"
-            temp_path = os.path.join(self.results_dir, f"temp_{timestamp_str}.jpg")
+        # Proceed only if we have a valid final image (even if it's just the zoomed one)
+        if final_image is not None and final_image.size > 0:
+            source_for_model = final_image # Use numpy array directly
+
             try:
-                save_success = cv2.imwrite(temp_path, final_image)
-                if not save_success: temp_path = None
-            except Exception: temp_path = None
-            try:
-                source_for_model = final_image if temp_path is None else temp_path
-                results = self.model(source=source_for_model)
+                # Run YOLO model inference
+                results = self.model(source=source_for_model, verbose=False)
+
+                # Process results
                 if not results or not hasattr(results[0], 'probs') or results[0].probs is None:
-                    classification_result = {"class": "Inference Error", "confidence": 0.0}
-                    if error_msg is None: error_msg = "Inference failed or returned no probabilities"
+                    # Inference failed or returned unexpected format
+                    print("Warning: Inference failed or returned no probabilities.")
+                    result_data["status"] = "Error"
+                    if "error_message" not in result_data: # Add error if not already set
+                         result_data["error_message"] = "Inference error (no probabilities)"
                 else:
+                    # Inference successful, extract results
                     predicted_class_index = results[0].probs.top1
                     confidence = float(results[0].probs.top1conf)
                     if results[0].names and predicted_class_index < len(results[0].names):
                         class_name = results[0].names[predicted_class_index]
                     else:
-                        class_name = "Unknown"
-                    classification_result = {"class": class_name, "confidence": confidence}
+                        class_name = f"Unknown Index ({predicted_class_index})"
+
+                    result_data["class"] = class_name
+                    result_data["confidence"] = confidence
+                    result_data["status"] = "Success"
+
+
 
             except Exception as model_err:
+                # Catch errors during the inference process itself
                 print(f"Error during model inference: {model_err}")
-                classification_result = {"class": "Inference Error", "confidence": 0.0}
-                if error_msg is None: error_msg = f"Model inference failed: {model_err}"
-        else:
-            classification_result = {"class": "Processing Error", "confidence": 0.0}
-            if error_msg is None: error_msg = "final_image was None before inference"
-            temp_path = None
+                traceback.print_exc()
+                if "error_message" not in result_data: # Add error if not already set
+                    result_data["error_message"] = f"Inference failed: {model_err}"
 
-        # --- Construct Final Result ---
-        result_data = {
-            "class": classification_result.get("class", "Error"),
-            "confidence": classification_result.get("confidence", 0.0),
-            "timestamp": time.time(),
-            "image_path": temp_path,
-            "image_data": final_image
-        }
-        if is_detection_fallback:
-            result_data["class"] = "Detection Failed"
+        else: # Handle case where final_image is None or empty before inference
+            print("Warning: Final image was None or empty before inference step.")
+            if "error_message" not in result_data: # Add error if not already set
+                 result_data["error_message"] = "Processing resulted in no image for inference"
+
+        # ignore inference result if Error
+        if result_data["status"] == "Error":
+            result_data["class"] = ""
             result_data["confidence"] = 0.0
-        if error_msg:
-            result_data["error"] = error_msg
-
-        # --- Save JSON ---
-        latest_result_path = os.path.join(self.results_dir, "latest_result.json")
-        try:
-            json_data = {k: v for k, v in result_data.items() if k != 'image_data'}
-            with open(latest_result_path, "w") as f:
-                json.dump(json_data, f, indent=4)
-        except IOError as e1:
-            print(f"Error writing results to {latest_result_path}: {e1}")
 
         return result_data
 
 
+
     def close(self):
         """Stops the capture thread and releases the camera resource."""
-        self.stop_capture() # Signal thread to stop
+        print("Initiating shutdown...")
+        self.stop_capture() # Signal capture thread to stop
+
+        # Wait for the capture thread to finish
         if self.capture_thread.is_alive():
-             self.capture_thread.join(timeout=1.0) # Wait for thread to finish
+             print("Waiting for capture thread to join...")
+             self.capture_thread.join(timeout=2.0) # Wait up to 2 seconds
              if self.capture_thread.is_alive():
-                  print("Warning: Capture thread did not stop gracefully.")
+                  print("Warning: Capture thread did not stop gracefully after timeout.")
+
+        # Release the camera resource
         if self.camera.isOpened():
+            print("Releasing camera resource...")
             self.camera.release()
-        print("Camera released and capture thread stopped.")
+            print("Camera released.")
+        else:
+             print("Camera was not open.")
+        print("Shutdown complete.")
 
 
-
-trigger = False
-@app.route("/trigger-inference", methods=["GET"])  # Accept GET
+# --- Flask Route ---
+@app.route("/trigger-inference", methods=["GET"])
 def handle_trigger():
-    global trigger
-    trigger = True
-    print("Triggering inference...")
+    """
+    Handles GET requests to trigger inspection and returns results
+    in the specified JSON format {status, class, confidence}.
+    """
+    global qc
+    print("Received request on /trigger-inference")
 
+    # Define default error response structure
+    error_response = {
+        "status": "Error",
+        "class": "",
+        "confidence": 0.0
+    }
+
+    if qc is None:
+        print("Error: QualityControl object (qc) not initialized.")
+        error_response["error_message"] = "Inspection system not ready" # Add detail
+        return jsonify(error_response), 500 # Return 500 status code
+
+    try:
+        # Perform the inspection
+        result = qc.inspect_tag() # This now returns the structured dict
+
+        # Prepare the final JSON response, excluding non-serializable image_data
+        response_data = {
+            "status": result.get("status", "Error"), # Default to Error if missing
+            "class": result.get("class", ""),
+            "confidence": result.get("confidence", 0.0),
+        }
+        # Optionally include the error message if present
+        if "error_message" in result:
+             response_data["error_message"] = result["error_message"]
+
+
+        print(f"Inspection complete. Returning result: {response_data}")
+        # Return the result as a JSON response with 200 OK status
+        return jsonify(response_data)
+
+    except Exception as e:
+        # Catch any unexpected errors during the inspection call
+        print(f"Critical error during triggered inspection: {e}")
+        traceback.print_exc() # Log the full traceback for debugging
+        error_response["error_message"] = f"Inspection failed: {str(e)}" # Add detail
+        # Return a 500 Internal Server Error
+        return jsonify(error_response), 500
 
 
 def start_flask_app():
-    app.run(host=HOST, port=PORT, threaded=True)
-# Create and start the Flask server thread
-# Set daemon=True so the thread exits when the main program exits
-threading.Thread(target=start_flask_app, daemon=True).start()
+    """Starts the Flask development server in a background thread."""
+    print(f"Starting Flask server on http://{HOST}:{PORT}")
+    try:
+        # use_reloader=False is important when running in a thread
+        app.run(host=HOST, port=PORT, threaded=True, debug=False, use_reloader=False)
+    except Exception as e:
+        print(f"Error to start Flask app: {e}")
+        traceback.print_exc()
 
 
 
+# --- Main Execution Block ---
 if __name__ == "__main__":
 
     # --- Check if model file exists ---
     if not os.path.exists(MODEL_PATH):
-        print(f"Error: Model file not found at {MODEL_PATH}")
-        sys.exit()
+        print(f"CRITICAL ERROR: Model file not found at {MODEL_PATH}")
+        sys.exit(1) # Use non-zero exit code for errors
     # ---
 
-    qc = None
-    quit_flag = False
-    live_window_name = "Live View (3X Zoomed)"
-    result_window_name = "Inspection Result (Cropped & Rotated)"
-    result_window_created = False
+    quit_flag = False # Flag to control the main loop
+    live_window_name = "Live View (Zoomed)"
+    result_window_name = "Last Inspection Result (Press Enter for Manual)"
+    result_window_created = False # Flag to track if result window is open
 
-
-
+    # --- Initialize QC and Start Flask Server ---
     try:
+        print("Initializing Quality Control system...")
+        # Initialize the Quality Control object and assign it to the global variable
         qc = NameTagQualityControl(MODEL_PATH, camera_id=CAMERA_ID, zoom_factor=ZOOM_FACTOR)
+        print("Quality Control system initialized.")
 
-        print("/nStarting inspection loop.")
-        print("Live feed shows zoomed view with detected rectangle. Press Enter to capture, crop, rotate and inspect.")
-        print("Press 'q' in any window to quit.")
+        # Start the Flask server in a separate daemon thread
+        print("Starting Flask server thread...")
+        flask_thread = threading.Thread(target=start_flask_app, daemon=True)
+        flask_thread.start()
+        time.sleep(1)   # Give the server a moment to start up
+        if not flask_thread.is_alive():
+             print("CRITICAL ERROR: Flask server thread failed to start.")
+             # Clean up QC before exiting if Flask fails to start
+             if qc: qc.close()
+             sys.exit(1)
+        print("Flask server thread started.")
+
+        print("\n--- System Ready ---")
+        print(f"Live feed shows zoomed view. Trigger inspection via GET request to http://{HOST}:{PORT}/trigger-inference")
+        print("Press Enter in the Live View window for manual capture/inspection.")
+        print("Press 'q' in any OpenCV window to quit.")
         if AUTO_EXPOSURE:
-            print(f"Using Auto Exposure setting: 0.25 (Behavior depends on driver interpretation)")
+            print(f"Using Auto Exposure (Behavior depends on driver)")
         else:
             print(f"Using Manual Exposure setting: {MANUAL_EXPOSURE_STOP}")
+        print("--------------------\n")
 
 
-
-        while not quit_flag: # Main loop controlled by flag
+        # --- Main Loop (Live View and Manual Interaction) ---
+        while not quit_flag:
+            if qc is None or not qc.camera.isOpened():
+                print("Error: QC object not available or camera closed unexpectedly. Exiting.")
+                quit_flag = True
+                break
 
             # --- Live Video Feed ---
             ret_live, live_frame_raw = qc.camera.read()
-            display_live_frame = None  # Frame to actually display
+            display_live_frame = None # Frame to actually display
 
             if ret_live and live_frame_raw is not None:
                 try:
@@ -477,76 +610,108 @@ if __name__ == "__main__":
                         # Make a copy to draw on
                         display_live_frame = zoomed_live_frame.copy()
 
-                        # 2. Detect rectangle info (bbox needed for drawing)
-                        live_rect_info = qc._detect_rectangle_info(zoomed_live_frame)  # Uses updated epsilon
+                        # 2. Detect rectangle info for drawing overlay
+                        live_rect_info = qc._detect_rectangle_info(zoomed_live_frame.copy())
 
-                        # 3. Draw bounding box if coordinates are found
-                        if live_rect_info:
+                        # 3. Draw bounding box if detected
+                        if live_rect_info and 'min_rect' in live_rect_info:
                             min_rect = live_rect_info['min_rect']
-                            box = cv2.boxPoints(min_rect)  # Get the 4 corner points
-                            box = np.intp(box)  # Convert points to integer type for drawing
-                            cv2.drawContours(display_live_frame, [box], 0, (0, 255, 0), 2)
+                            box = cv2.boxPoints(min_rect)
+                            box = np.intp(box)
+                            cv2.drawContours(display_live_frame, [box], 0, (0, 255, 0), 2) # Green box
 
-                        # Display the frame (zoomed, potentially with box)
+                        # Display the potentially annotated frame
                         cv2.imshow(live_window_name, display_live_frame)
-                    else:
-                        pass  # Keep previous frame shown if zoom fails
 
                 except Exception as live_process_err:
                     print(f"Error processing live frame: {live_process_err}")
-            else:
-                print("Warning: Failed to grab frame for live feed.")
-            # ---
 
-
-            # --- Handle Key Press for Quit or Capture ---
-            key = cv2.waitKey(1) & 0xFF
+            # --- Handle Key Press for Quit or Manual Capture ---
+            key = cv2.waitKey(1) & 0xFF # Check for key press (1ms delay)
 
             if key == ord('q'):
-                print("Quit key pressed.")
+                print("Quit key ('q') pressed. Shutting down...")
                 quit_flag = True
-                break
+                break # Exit the main loop immediately
+
+            # Handle Enter key for manual inspection
+            elif key == 13: # Enter key
+                print("\nEnter key pressed, performing manual inspection...")
+                if qc:
+                    result = qc.inspect_tag() # Call the inspection function
+                    img_display = result.get("image_data") # Get the processed image
+
+                    # Determine window title based on result structure
+                    window_title = result_window_name # Default title
+                    status = result.get("status")
+                    cls = result.get("class", "")
+                    conf = result.get("confidence", 0.0)
+                    err_msg = result.get("error_message", None)
+
+                    if status == "Error":
+                         print(f"Manual, Inspection Error: {err_msg or 'Unknown Critical Error'}")
+                         window_title = f"Manual, Inspection Error: {err_msg or 'Unknown Critical Error'}"
+                    elif status == "Failed":
+                         print(f"Manual, Warning: {err_msg}")
+                         window_title = f"Manual, Warning: {err_msg} Manual Result - class: {cls} confidence: {conf:.2f}"
+                    else: #Success
+                         print(f"Manual, Result - class: {cls} confidence: {conf:.2f}")
+                         window_title = f"Manual, Result - class: {cls} confidence: {conf:.2f}"
 
 
-
-            if trigger:
-                print("Received request on /trigger-inference")
-                trigger = False
-
-            #elif key == 13: # Enter key - Trigger inspection
-                print("/nEnter pressed, inspecting tag (Capture -> Zoom -> Retry Detect -> Rotate/Crop)...")
-                result = qc.inspect_tag()
-                img_display = result.get("image_data")
-
-                if "error" in result:
-                     print(f"Inspection Error: {result['error']}")
-                     window_title = f"Error: {result['error']}"
-                elif result.get("class") == "Detection Failed":
-                     print("Inspection finished: Detection Failed (showing zoomed image).")
-                     window_title = "Result: Detection Failed"
+                    # Display the result image in a separate window
+                    if img_display is not None and img_display.size > 0:
+                         try:
+                              # Create/update the result window
+                              cv2.imshow(result_window_name, img_display)
+                              cv2.setWindowTitle(result_window_name, window_title)
+                              result_window_created = True
+                              print(f"-> '{result_window_name}' updated. Press Enter for next manual, 'q' to quit.")
+                         except cv2.error as display_e:
+                              print(f"OpenCV Error displaying result image: {display_e}")
+                         except Exception as display_e:
+                              print(f"Error displaying result image: {display_e}")
+                    else:
+                         print("No image data available to display for manual result.")
+                         if result_window_created:
+                              try:
+                                   # Show placeholder if window exists but no image
+                                   placeholder = np.zeros((100, 400, 3), dtype=np.uint8)
+                                   cv2.putText(placeholder, "No Image Data", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                                   cv2.putText(placeholder, window_title, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                                   cv2.imshow(result_window_name, placeholder)
+                                   cv2.setWindowTitle(result_window_name, window_title + " (No Image)")
+                              except cv2.error:
+                                   result_window_created = False # Window likely closed
+                              except Exception as placeholder_e:
+                                   print(f"Error displaying placeholder: {placeholder_e}")
                 else:
-                     print(f"Displaying result: {result['class']} (Confidence: {result['confidence']:.2f})")
-                     window_title = f"Result: {result['class']} (Conf: {result['confidence']:.2f})"
+                    print("Cannot perform manual inspection: QC object not initialized.")
 
-                if img_display is not None and img_display.size > 0:
-                     try:
-                          cv2.imshow(result_window_name, img_display)
-                          cv2.setWindowTitle(result_window_name, window_title)
-                          print(f"-> '{result_window_name}' updated. Press Enter to capture next, 'q' to quit.")
-                     except Exception as display_e:
-                          print(f"Error displaying result image in '{result_window_name}': {display_e}")
-                else:
-                     print("No image data available to display for result.")
+            # --- End of Key Handling ---
 
-            # --- End of Trigger Handling ---
+            # Check if Flask thread is still alive
+            if not flask_thread.is_alive():
+                print("CRITICAL ERROR: Flask server thread has stopped unexpectedly. Exiting.")
+                quit_flag = True # Stop main loop if server dies
 
     except Exception as e:
-        print(f"/nA critical error occurred: {e}")
+        print(f"\nA critical error occurred in the main setup or loop: {e}")
         traceback.print_exc()
     finally:
-        print("/nCleaning up...")
+        # --- Cleanup ---
+        print("\n--- Initiating Final Cleanup ---")
         if qc is not None:
+            print("Closing Quality Control system...")
             qc.close()
-        cv2.destroyAllWindows()
-        print("Program finished.")
+        else:
+            print("QC object was not initialized, skipping QC close.")
 
+        print("Destroying OpenCV windows...")
+        cv2.destroyAllWindows()
+        print("OpenCV windows destroyed.")
+
+        if 'flask_thread' in locals() and flask_thread.is_alive():
+            print("Flask server thread is still alive (as expected for daemon).")
+
+        print("--- Program Finished ---")
