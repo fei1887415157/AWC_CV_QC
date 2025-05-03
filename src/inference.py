@@ -29,6 +29,12 @@ MORPH_KERNEL_SIZE = (5, 5)  # Morphological kernel size
 
 
 
+def set_model_path(path):
+    global MODEL_PATH
+    MODEL_PATH = path
+
+
+
 class NameTagQualityControl:
     def __init__(self, model_path, camera_id=0, zoom_factor=1):
         """
@@ -401,6 +407,7 @@ class NameTagQualityControl:
         if self.camera.isOpened():
             self.camera.release()
         print("Camera released and capture thread stopped.")
+
 
 
 if __name__ == "__main__":
