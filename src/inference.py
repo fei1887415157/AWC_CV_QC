@@ -29,8 +29,8 @@ MORPH_KERNEL_SIZE = (5, 5)  # Morphological kernel size
 
 # --- Flask ---
 app = Flask(__name__)
-HOST = "0.0.0.0"
-PORT = 5001
+HOST = "127.0.0.1"
+PORT = 2000
 # ---
 
 
@@ -511,8 +511,7 @@ if __name__ == "__main__":
 
             if trigger:
                 print("Received request on /trigger-inference")
-
-
+                trigger = False
 
             #elif key == 13: # Enter key - Trigger inspection
                 print("/nEnter pressed, inspecting tag (Capture -> Zoom -> Retry Detect -> Rotate/Crop)...")
@@ -539,7 +538,7 @@ if __name__ == "__main__":
                 else:
                      print("No image data available to display for result.")
 
-            # --- End of Enter Key Handling ---
+            # --- End of Trigger Handling ---
 
     except Exception as e:
         print(f"/nA critical error occurred: {e}")
