@@ -11,7 +11,7 @@ new model: high ceiling, low floor
 pretrained model: low ceiling, high floor
 
 Notes
-PyTorch, use below command to install if using CUDA:
+Ultralytics uses PyTorch, use below command to install if using PyTorch+CUDA:
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 This model needs good lighting.
