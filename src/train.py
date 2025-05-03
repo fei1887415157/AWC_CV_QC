@@ -30,7 +30,7 @@ model = YOLO("yolo11n-cls.pt")  # load a pretrained model (recommended for train
 
 
 
-# Train / fine tune the model
+# Train / Fine-Tune the model
 if __name__ == '__main__':
 	# original fake resolution: ~3000 * ~1000
 	# original real resolution: ~750 * ~250

@@ -1,13 +1,14 @@
 import cv2
 from ultralytics import YOLO
 import time
-import json
 import os
 import traceback  # For detailed error printing
 import numpy as np
 import threading  # For dedicated capture thread
 from queue import Queue  # For thread-safe frame passing
 import sys
+import json
+from flask import Flask
 
 
 
@@ -25,6 +26,11 @@ APPROX_POLY_EPSILON_FACTOR = 0.02  # amount of distortion due to camera
 MIN_ASPECT_RATIO = 0.2
 MAX_ASPECT_RATIO = 5.0
 MORPH_KERNEL_SIZE = (5, 5)  # Morphological kernel size
+
+# --- Flask ---
+app = Flask(__name__)
+HOST = "0.0.0.0"
+PORT = 5001
 # ---
 
 
@@ -410,7 +416,25 @@ class NameTagQualityControl:
 
 
 
+trigger = False
+@app.route("/trigger-inference", methods=["GET"])  # Accept GET
+def handle_trigger():
+    global trigger
+    trigger = True
+    print("Triggering inference...")
+
+
+
+def start_flask_app():
+    app.run(host=HOST, port=PORT, threaded=True)
+# Create and start the Flask server thread
+# Set daemon=True so the thread exits when the main program exits
+threading.Thread(target=start_flask_app, daemon=True).start()
+
+
+
 if __name__ == "__main__":
+
     # --- Check if model file exists ---
     if not os.path.exists(MODEL_PATH):
         print(f"Error: Model file not found at {MODEL_PATH}")
@@ -419,9 +443,11 @@ if __name__ == "__main__":
 
     qc = None
     quit_flag = False
-    live_window_name = "Live Feed (Zoomed + Box)"
+    live_window_name = "Live View (3X Zoomed)"
     result_window_name = "Inspection Result (Cropped & Rotated)"
     result_window_created = False
+
+
 
     try:
         qc = NameTagQualityControl(MODEL_PATH, camera_id=CAMERA_ID, zoom_factor=ZOOM_FACTOR)
@@ -433,6 +459,7 @@ if __name__ == "__main__":
             print(f"Using Auto Exposure setting: 0.25 (Behavior depends on driver interpretation)")
         else:
             print(f"Using Manual Exposure setting: {MANUAL_EXPOSURE_STOP}")
+
 
 
         while not quit_flag: # Main loop controlled by flag
@@ -480,7 +507,14 @@ if __name__ == "__main__":
                 quit_flag = True
                 break
 
-            elif key == 13: # Enter key - Trigger inspection
+
+
+            if trigger:
+                print("Received request on /trigger-inference")
+
+
+
+            #elif key == 13: # Enter key - Trigger inspection
                 print("/nEnter pressed, inspecting tag (Capture -> Zoom -> Retry Detect -> Rotate/Crop)...")
                 result = qc.inspect_tag()
                 img_display = result.get("image_data")
@@ -498,7 +532,6 @@ if __name__ == "__main__":
                 if img_display is not None and img_display.size > 0:
                      try:
                           cv2.imshow(result_window_name, img_display)
-                          result_window_created = True
                           cv2.setWindowTitle(result_window_name, window_title)
                           print(f"-> '{result_window_name}' updated. Press Enter to capture next, 'q' to quit.")
                      except Exception as display_e:
