@@ -26,6 +26,8 @@ from ultralytics import YOLO
 # Load a model
 #model = YOLO("yolo12n-cls.yaml")  # build a new model from YAML
 #model = YOLO("F:/JetBrains/PycharmProjects/AWC_CV_QC/src/runs/classify/train2/weights/best.pt")
+
+# Use small model since dataset is small
 model = YOLO("yolo11n-cls.pt")  # load a pretrained model (recommended for training)
 
 # best to worst model: can not differentiate based on loss, need inference
@@ -37,16 +39,20 @@ if __name__ == '__main__':
 	# original fake resolution: ~3000 * ~1000
 	# original real resolution: ~750 * ~250
 	# optimized resolution (naked eye): 300 * 100
-	# Laptop: C:/Users/fei18/PycharmProjects/AWC_CV_QC/dataset
+	# Laptop:  C:/Users/fei18/PycharmProjects/AWC_CV_QC/dataset
 	# Desktop: F:/JetBrains/PycharmProjects/AWC_CV_QC/dataset
 
-	results = model.train(data="F:/JetBrains/PycharmProjects/AWC_CV_QC/dataset",
+	results = model.train(data="../dataset",
 	                      pretrained=True,
-	                      epochs=1000,
+	                      epochs=200,
 	                      patience=100,
-		# training must use square image size, multiple of 32, will auto padding
+		# training must use square image size, stride of 32
+	    # rect=True enables auto padding
 		# inference can use other aspect ratio
 						  imgsz=768,
-	                      workers=7,          # CPU intensive, number of cores
+	                      rect=True,
+	                      cos_lr=True,        # Cosine Annealing, learning rate schedule
+	                      weight_decay=0.001,   # penalty for large weights, less overfit
+						  workers=7,          # CPU intensive, number means number of cores
 	                      batch=32            # GPU VRAM / RAM intensive
 	                      )

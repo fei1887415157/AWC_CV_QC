@@ -13,7 +13,7 @@ from flask import Flask, jsonify
 
 
 # --- Global Configuration ---
-MODEL_PATH = "F:/JetBrains/PycharmProjects/AWC_CV_QC/src/runs/classify/11s/weights/best.pt" # Path to your trained .pt model
+MODEL_PATH = "runs/classify/train4/weights/best.pt" # Path to your trained .pt model
 CAMERA_ID = 0  # Change if you have multiple cameras
 REQUESTED_WIDTH = 1920  # camera width
 REQUESTED_HEIGHT = 1080  # camera height
@@ -421,14 +421,17 @@ class NameTagQualityControl:
             result_data["status"] = "Failed"
             result_data["error_message"] = f"Warning: Rectangle detection Failed after {RECT_DETECT_RETRIES} retries. Using zoomed image."
 
+
+
         # --- Inference ---
         # Proceed only if we have a valid final image (even if it's just the zoomed one)
         if final_image is not None and final_image.size > 0:
-            source_for_model = final_image # Use numpy array directly
 
             try:
                 # Run YOLO model inference
-                results = self.model(source=source_for_model, verbose=False)
+                # imgsz=(height, width)
+                height, width = final_image.shape[:2]
+                results = self.model(source=final_image, rect=True, imgsz=(height, width))
 
                 # Process results
                 if not results or not hasattr(results[0], 'probs') or results[0].probs is None:
