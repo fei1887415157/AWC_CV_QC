@@ -8,9 +8,8 @@ import threading  # For dedicated capture thread
 # Need Queue and Empty exception
 from queue import Queue, Empty
 import sys
-import json
-# Import jsonify from Flask
 from flask import Flask, jsonify
+
 
 
 # --- Global Configuration ---
@@ -34,18 +33,16 @@ HOST = "127.0.0.1"
 PORT = 2000
 # ---
 
-# --- Global variable for Quality Control object ---
 # This allows the Flask route to access the qc instance created in __main__
 qc = None
 # ---
 
 
-def set_model_path(path):
-    global MODEL_PATH
-    MODEL_PATH = path
-
 
 class NameTagQualityControl:
+
+
+
     def __init__(self, model_path, camera_id=0, zoom_factor=1):
         """
         Initializes the NameTagQualityControl class. Sets up camera,
@@ -102,6 +99,8 @@ class NameTagQualityControl:
         print("Capture thread started.")
         # ---
 
+
+
     def _capture_loop(self):
         """Continuously captures frames and puts the latest one in the queue."""
         print("Capture loop running...")
@@ -147,6 +146,8 @@ class NameTagQualityControl:
             except Empty:
                 break
 
+
+
     def get_latest_frame(self):
         """Gets the latest frame from the capture queue."""
         try:
@@ -158,6 +159,7 @@ class NameTagQualityControl:
         except Exception as e: # Catch other potential errors
             print(f"Error getting frame from queue: {e}")
             return None
+
 
 
     def _apply_zoom(self, frame):
@@ -184,7 +186,10 @@ class NameTagQualityControl:
         if zoomed_frame.size == 0: return None
         return zoomed_frame
 
-    def _find_largest_rectangle_contour(self, contours, frame_shape):
+
+
+    @staticmethod
+    def _find_largest_rectangle_contour(contours, frame_shape):
         """Finds the largest contour that approximates to 4 vertices and meets criteria."""
         largest_rectangle_contour = None
         max_area = 0
@@ -226,6 +231,8 @@ class NameTagQualityControl:
                     largest_rectangle_contour = contour
 
         return largest_rectangle_contour
+
+
 
     def _detect_rectangle_info(self, frame):
         """Detects the largest valid rectangle contour in the frame."""
@@ -270,6 +277,8 @@ class NameTagQualityControl:
 
         # Return the information
         return {'bbox': bbox, 'min_rect': min_rect}
+
+
 
     def _rotate_and_crop(self, frame, min_rect):
          """Rotates the frame to align the min_rect and crops it."""
@@ -339,6 +348,8 @@ class NameTagQualityControl:
          if cropped.size == 0: return None
          return cropped
 
+
+
     def inspect_tag(self):
         """
         Captures frame, processes, runs inference. Returns a dictionary with
@@ -405,10 +416,10 @@ class NameTagQualityControl:
                  result_data["image_data"] = final_image
         else:
             # Detection failed after retries, use the zoomed image for potential inference
-            print(f"Warning: Rectangle detection failed after {RECT_DETECT_RETRIES} retries. Using zoomed image.")
+            print(f"Warning: Rectangle detection Failed after {RECT_DETECT_RETRIES} retries. Using zoomed image.")
             final_image = zoomed_image # Use zoomed image
             result_data["status"] = "Failed"
-            result_data["error_message"] = "Detection failed"
+            result_data["error_message"] = f"Warning: Rectangle detection Failed after {RECT_DETECT_RETRIES} retries. Using zoomed image."
 
         # --- Inference ---
         # Proceed only if we have a valid final image (even if it's just the zoomed one)
@@ -438,8 +449,6 @@ class NameTagQualityControl:
                     result_data["class"] = class_name
                     result_data["confidence"] = confidence
                     result_data["status"] = "Success"
-
-
 
             except Exception as model_err:
                 # Catch errors during the inference process itself
@@ -482,6 +491,7 @@ class NameTagQualityControl:
         else:
              print("Camera was not open.")
         print("Shutdown complete.")
+
 
 
 # --- Flask Route ---
@@ -534,6 +544,7 @@ def handle_trigger():
         return jsonify(error_response), 500
 
 
+
 def start_flask_app():
     """Starts the Flask development server in a background thread."""
     print(f"Starting Flask server on http://{HOST}:{PORT}")
@@ -580,7 +591,7 @@ if __name__ == "__main__":
         print("Flask server thread started.")
 
         print("\n--- System Ready ---")
-        print(f"Live feed shows zoomed view. Trigger inspection via GET request to http://{HOST}:{PORT}/trigger-inference")
+        print(f"Live view shows zoomed view. Trigger inspection via GET request to http://{HOST}:{PORT}/trigger-inference")
         print("Press Enter in the Live View window for manual capture/inspection.")
         print("Press 'q' in any OpenCV window to quit.")
         if AUTO_EXPOSURE:
@@ -589,7 +600,6 @@ if __name__ == "__main__":
             print(f"Using Manual Exposure setting: {MANUAL_EXPOSURE_STOP}")
         print("--------------------\n")
 
-
         # --- Main Loop (Live View and Manual Interaction) ---
         while not quit_flag:
             if qc is None or not qc.camera.isOpened():
@@ -597,13 +607,13 @@ if __name__ == "__main__":
                 quit_flag = True
                 break
 
-            # --- Live Video Feed ---
+            # --- Live Video View ---
             ret_live, live_frame_raw = qc.camera.read()
             display_live_frame = None # Frame to actually display
 
             if ret_live and live_frame_raw is not None:
                 try:
-                    # 1. Apply zoom for the live feed display
+                    # 1. Apply zoom for the live view display
                     zoomed_live_frame = qc._apply_zoom(live_frame_raw)
 
                     if zoomed_live_frame is not None:
@@ -657,7 +667,6 @@ if __name__ == "__main__":
                     else: #Success
                          print(f"Manual, Result - class: {cls} confidence: {conf:.2f}")
                          window_title = f"Manual, Result - class: {cls} confidence: {conf:.2f}"
-
 
                     # Display the result image in a separate window
                     if img_display is not None and img_display.size > 0:

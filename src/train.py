@@ -21,6 +21,8 @@ This model needs good lighting.
 
 from ultralytics import YOLO
 
+
+
 # Load a model
 #model = YOLO("yolo12n-cls.yaml")  # build a new model from YAML
 #model = YOLO("F:/JetBrains/PycharmProjects/AWC_CV_QC/src/runs/classify/train2/weights/best.pt")

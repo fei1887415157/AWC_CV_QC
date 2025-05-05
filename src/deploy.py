@@ -1,8 +1,11 @@
 """
+!!! NOT WORKING !!!
+
 Distribution and Deployment Instructions:
 Go to /src/dist,
 copy and paste the "AWC CV QC PyTorch" folder.
 """
+
 import shutil
 import subprocess
 import sys
@@ -71,10 +74,10 @@ for imp in hidden_imports:
 
 
 # --- Clear the dist folder to prevent conflicts ---
-if os.path.isdir("dist/" + APP_NAME):
-    print("Deleting contents of dist folder")
-    shutil.rmtree("dist/" + APP_NAME)
-    print("Deleted dist folder")
+if os.path.isdir("dist\\" + APP_NAME):
+    print("Clearing dist folder")
+    shutil.rmtree("dist\\" + APP_NAME)
+    print("Cleared dist folder")
 
 
 

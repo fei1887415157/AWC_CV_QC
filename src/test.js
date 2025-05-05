@@ -1,13 +1,17 @@
-// Import the node-fetch library to make HTTP requests in Node.js
+// A simple Node.js script to send a GET request to the YOLO inference server and print the JSON response.
+
+
+
 import fetch from 'node-fetch';
 
-// A simple Node.js script to send a GET request to the YOLO inference server
-// and print the JSON response.
+
 
 // --- Configuration ---
 // Define the URL of your Python Flask server endpoint
 // Make sure the host and port match your running inference.py script
 const serverUrl = 'http://127.0.0.1:2000/trigger-inference';
+
+
 
 // --- Core Function ---
 // Function to send the trigger request to the server and handle the response
@@ -48,6 +52,8 @@ async function sendTriggerRequest() {
         console.error(error); // Log the full error object
     }
 }
+
+
 
 // --- Execution ---
 // Immediately call the asynchronous function when the script is run
