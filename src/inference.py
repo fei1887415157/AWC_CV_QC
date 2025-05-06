@@ -5,7 +5,6 @@ import os
 import traceback  # For detailed error printing
 import numpy as np
 import threading  # For dedicated capture thread
-# Need Queue and Empty exception
 from queue import Queue, Empty
 import sys
 from flask import Flask, jsonify
@@ -13,16 +12,17 @@ from flask import Flask, jsonify
 
 
 # --- Global Configuration ---
-MODEL_PATH = "runs/classify/train4/weights/best.pt" # Path to your trained .pt model
+MODEL_PATH = "best.pt" # Path to your trained .pt model
 CAMERA_ID = 0  # Change if you have multiple cameras
 REQUESTED_WIDTH = 1920  # camera width
 REQUESTED_HEIGHT = 1080  # camera height
 ZOOM_FACTOR = 3  # 1 is no zoom
-AUTO_EXPOSURE = False
-MANUAL_EXPOSURE_STOP = -5
+AUTO_EXPOSURE = True
+MANUAL_EXPOSURE_STOP = -6
+CAMERA_FPS = 5
 MIN_RECT_AREA = 10000  # Minimum pixel area
 RECT_DETECT_RETRIES = 100  # Number of times to retry
-APPROX_POLY_EPSILON_FACTOR = 0.02  # amount of distortion due to camera
+APPROX_POLY_EPSILON_FACTOR = 0.05  # amount of distortion due to camera
 MIN_ASPECT_RATIO = 0.2
 MAX_ASPECT_RATIO = 5.0
 MORPH_KERNEL_SIZE = (5, 5)  # Morphological kernel size
@@ -67,7 +67,14 @@ class NameTagQualityControl:
         print("Configuring camera...")
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, REQUESTED_WIDTH)
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, REQUESTED_HEIGHT)
-        time.sleep(0.2) # Allow settings to apply
+
+        success_fps = self.camera.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
+        if not success_fps:
+            print("Warning: Could not set desired FPS using cap.set().")
+        else:
+            print(f"Set camera FPS to {CAMERA_FPS}")
+
+        time.sleep(1) # Allow settings to apply
 
         if AUTO_EXPOSURE:
             print("Setting Auto Exposure (0.25)...")
@@ -92,7 +99,7 @@ class NameTagQualityControl:
         self.zoom_factor = zoom_factor
 
         # --- Threaded Capture Setup ---
-        self.capture_queue = Queue(maxsize=1) # Store only the latest frame
+        self.capture_queue = Queue(maxsize=5)
         self.capture_active = True
         self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.capture_thread.start()
@@ -299,6 +306,8 @@ class NameTagQualityControl:
               # Calculate the bounding box of the rotated rectangle
               box = cv2.boxPoints(min_rect)
               pts = np.intp(box) # Use np.intp for potentially large coordinates
+
+              cropped = pts
 
               x_coords = pts[:, 0]
               y_coords = pts[:, 1]
