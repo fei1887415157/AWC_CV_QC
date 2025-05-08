@@ -62,10 +62,16 @@ if __name__ == '__main__':
 						  imgsz=768,
 	                      rect=True,
 	                      cos_lr=True,        # Cosine Annealing, learning rate schedule
-	                      weight_decay=0.001,   # penalty for large weights, less overfit
 						  workers=7,          # CPU intensive, number means number of cores
 	                      # use small batch size, less overfit
 	                      batch=2,            # GPU VRAM / RAM intensive
-	                      auto_augment="autoaugment",
+	                      #auto_augment="autoaugment",
+	                      augment=True,
+	                      degrees=180,
+	                      shear=20,
+	                      perspective=0.001,
+	                      flipud=0.5,
+	                      mosaic=0,
+	                      weight_decay=0.001,  # penalty for large weights, less overfit
 	                      dropout=0.1       # 0 to 1, randomly drop neurons, less overfit
 	                      )
