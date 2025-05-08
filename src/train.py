@@ -9,6 +9,7 @@ YOLOv12 only has detection pretrained, and it does not work on my PC.
 Build a new model has poor performance, likely due to small dataset.
 new model: high ceiling, low floor
 pretrained model: low ceiling, high floor
+Note the dataset is small, choosing hyperparameters is crucial
 
 Notes
 Ultralytics uses PyTorch, use below command to install if using PyTorch+CUDA:
@@ -42,10 +43,19 @@ if __name__ == '__main__':
 	# Laptop:  C:/Users/fei18/PycharmProjects/AWC_CV_QC/dataset
 	# Desktop: F:/JetBrains/PycharmProjects/AWC_CV_QC/dataset
 
+	'''
+	Training Guide
+	Low training loss but high validation loss means overfit;
+	Adjust hyperparameters.
+	'''
+
+	# default optimizer: AdamW
+	# default learning rate: determined by AdamW, 0.001667
+	# default momentum: determined by AdamW, 0.9
 	results = model.train(data="../dataset",
 	                      pretrained=True,
-	                      epochs=200,
-	                      patience=100,
+	                      epochs=1000,
+	                      patience=200,
 		# training must use square image size, stride of 32
 	    # rect=True enables auto padding
 		# inference can use other aspect ratio
@@ -54,5 +64,8 @@ if __name__ == '__main__':
 	                      cos_lr=True,        # Cosine Annealing, learning rate schedule
 	                      weight_decay=0.001,   # penalty for large weights, less overfit
 						  workers=7,          # CPU intensive, number means number of cores
-	                      batch=32            # GPU VRAM / RAM intensive
+	                      # use small batch size, less overfit
+	                      batch=2,            # GPU VRAM / RAM intensive
+	                      auto_augment="autoaugment",
+	                      dropout=0.1       # 0 to 1, randomly drop neurons, less overfit
 	                      )
