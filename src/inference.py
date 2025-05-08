@@ -11,17 +11,19 @@ from flask import Flask, jsonify
 
 
 
-# --- Global Configuration ---
-MODEL_PATH = "best.pt" # Path to your trained .pt model
+# --- Camera Configuration ---
+MODEL_PATH = "runs/classify/train3/weights/best.pt" # Path to your trained .pt model
 CAMERA_ID = 0  # Change if you have multiple cameras
 REQUESTED_WIDTH = 1920  # camera width
 REQUESTED_HEIGHT = 1080  # camera height
 ZOOM_FACTOR = 3  # 1 is no zoom
-AUTO_EXPOSURE = True
-MANUAL_EXPOSURE_STOP = -6
-CAMERA_FPS = 5
+AUTO_EXPOSURE = False
+MANUAL_EXPOSURE_STOP = -5
+CAMERA_FPS = 30
+
+# --- Detection Configuration ---
 MIN_RECT_AREA = 10000  # Minimum pixel area
-RECT_DETECT_RETRIES = 100  # Number of times to retry
+RECT_DETECT_RETRIES = 10  # Number of times to retry; setting it too high will cause image corruption
 APPROX_POLY_EPSILON_FACTOR = 0.05  # amount of distortion due to camera
 MIN_ASPECT_RATIO = 0.2
 MAX_ASPECT_RATIO = 5.0
