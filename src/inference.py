@@ -8,7 +8,7 @@ import threading  # For Flask thread only
 from queue import Queue, Empty # Use Queue for thread-safe communication
 import sys
 from flask import Flask, jsonify
-import json # Added for saving JSON results in inspect_tag
+
 
 
 # --- Camera Configuration ---
@@ -103,10 +103,7 @@ class NameTagQualityControl:
         print(f"Actual Exposure value: {self.camera.get(cv2.CAP_PROP_EXPOSURE)}")
         # --- End Camera Settings ---
 
-        self.results_dir = "results"
-        os.makedirs(self.results_dir, exist_ok=True)
         self.zoom_factor = zoom_factor
-
 
 
 
@@ -199,7 +196,7 @@ class NameTagQualityControl:
 
     def _crop_frame_to_bbox(self, frame, bbox):
          """
-         Crops the frame to a region 10% smaller than the provided bounding box,
+         Crops the frame to a region smaller than the provided bounding box,
          centered within the original bbox.
          """
          if frame is None or bbox is None:
@@ -211,15 +208,14 @@ class NameTagQualityControl:
          center_x = x + w_rect / 2.0
          center_y = y + h_rect / 2.0
 
-         # Calculate the new width and height (reduced by 10%)
+         # Calculate the new width and height (reduced)
          new_w = int(w_rect * CROP_REDUCTION_FACTOR)
          new_h = int(h_rect * CROP_REDUCTION_FACTOR)
 
          # Ensure new dimensions are at least 1 pixel
          if new_w <= 0 or new_h <= 0:
               print("Warning: Reduced crop dimensions are too small.")
-              # Fallback: return original crop? Or None? Let's try original crop.
-              return self._crop_frame_to_bbox_exact(frame, bbox) # Call a helper for exact crop
+              return self._crop_frame_to_bbox_exact(frame, bbox) # Fallback
 
 
          # Calculate new top-left corner based on center and new dimensions
@@ -229,7 +225,6 @@ class NameTagQualityControl:
          # Ensure new coordinates are within the frame boundaries
          new_x1 = max(0, new_x1)
          new_y1 = max(0, new_y1)
-         # Calculate bottom-right based on new top-left and new dimensions
          new_x2 = min(frame.shape[1], new_x1 + new_w)
          new_y2 = min(frame.shape[0], new_y1 + new_h)
 
@@ -262,14 +257,14 @@ class NameTagQualityControl:
 
     def inspect_tag(self):
         """
-        Captures frame, zooms, detects rectangle, crops to bounding box (10% smaller),
+        Captures frame, zooms, detects rectangle, crops to bounding box (smaller),
         and runs inference on the cropped image. Falls back to zoomed image if detection fails.
-        Determines display text and color based on result.
+        Determines display text and color based on result. Does NOT save temp image or result JSON.
         """
         result_data = {
             "status": "Error", "error_message": "", "class": "",
             "confidence": 0.0, "image_data": None,
-            "display_text": "Error", "display_color": ERROR_COLOR # Default display info
+            "display_text": "Error", "display_color": ERROR_COLOR
         }
         final_image_for_inference = None
         is_detection_fallback = False
@@ -286,24 +281,23 @@ class NameTagQualityControl:
         zoomed_image = self._apply_zoom(raw_image_copy)
         if zoomed_image is None:
              result_data["error_message"] = "Zoom failed"
-             result_data["image_data"] = raw_image_copy # Store raw if zoom failed
+             result_data["image_data"] = raw_image_copy
              return result_data
 
-        # 3. Detect Rectangle Info (bbox is needed for cropping)
+        # 3. Detect Rectangle Info
         rect_info = self._detect_rectangle_info(zoomed_image.copy())
 
         if rect_info and 'bbox' in rect_info:
-            # 4. Crop to Bounding Box (10% smaller)
+            # 4. Crop to Bounding Box (smaller)
             print("Rectangle detected, cropping smaller area...")
-            final_image_for_inference = self._crop_frame_to_bbox(zoomed_image, rect_info['bbox']) # Uses the new logic
+            final_image_for_inference = self._crop_frame_to_bbox(zoomed_image, rect_info['bbox'])
             if final_image_for_inference is None:
                  print("Warning: Cropping failed. Falling back to zoomed image.")
-                 final_image_for_inference = zoomed_image # Fallback to zoomed
+                 final_image_for_inference = zoomed_image
                  is_detection_fallback = True
                  result_data["error_message"] = "Cropping failed after detection"
                  result_data["display_text"] = "Detect Fail"
                  result_data["display_color"] = ERROR_COLOR
-            # else: Cropping successful
         else:
             # 5. Fallback to zoomed image if detection failed
             print("Rectangle detection failed. Using zoomed image for inference.")
@@ -318,21 +312,15 @@ class NameTagQualityControl:
 
         # --- Inference ---
         if final_image_for_inference is not None and final_image_for_inference.size > 0:
-            temp_path = None
-            try: # Save temp image
-                timestamp_str = f"{int(time.time())}"
-                temp_path = os.path.join(self.results_dir, f"temp_inspect_{timestamp_str}.jpg")
-                save_success = cv2.imwrite(temp_path, final_image_for_inference)
-                if not save_success: temp_path = None
-            except Exception as save_err: print(f"Error saving temp image: {save_err}"); temp_path = None
+            # --- Removed image saving block ---
 
-            try: # Run Inference
+            try: # Run Inference directly on the image in memory
                 height, width = final_image_for_inference.shape[:2]
                 print(f"Running inference on image size: {width}x{height}")
                 results = self.model(source=final_image_for_inference, rect=True, imgsz=(height, width))
 
                 if not results or not hasattr(results[0], 'probs') or results[0].probs is None:
-                    if not is_detection_fallback: # Only update if not already detection fail
+                    if not is_detection_fallback:
                        result_data["error_message"] = "Inference error (no probabilities)"
                        result_data["display_text"] = "Inference Error"
                        result_data["display_color"] = ERROR_COLOR
@@ -354,13 +342,13 @@ class NameTagQualityControl:
                          result_data["display_text"] = "Good"
                          result_data["display_color"] = GOOD_COLOR
                     else:
-                         result_data["display_text"] = "Bad" # Assume others are Bad
+                         result_data["display_text"] = "Bad"
                          result_data["display_color"] = BAD_COLOR
 
             except Exception as model_err:
                 print(f"Error during model inference: {model_err}")
                 traceback.print_exc()
-                if not is_detection_fallback: # Only update if not already detection fail
+                if not is_detection_fallback:
                     result_data["error_message"] = f"Inference failed: {model_err}"
                     result_data["display_text"] = "Inference Error"
                     result_data["display_color"] = ERROR_COLOR
@@ -376,22 +364,6 @@ class NameTagQualityControl:
         if result_data["status"] != "Success":
             result_data["class"] = ""
             result_data["confidence"] = 0.0
-            # Keep the specific error message and display text/color if one was set
-
-        # --- Save JSON ---
-        latest_result_path = os.path.join(self.results_dir, "latest_result.json")
-        try:
-            json_data_to_save = {
-                "status": result_data["status"],
-                "class": result_data["class"],
-                "confidence": result_data["confidence"]
-            }
-            if "error_message" in result_data and result_data["error_message"]:
-                 json_data_to_save["error_message"] = result_data["error_message"]
-            with open(latest_result_path, "w") as f:
-                json.dump(json_data_to_save, f, indent=4)
-        except IOError as e:
-            print(f"Error writing results to {latest_result_path}: {e}")
 
         return result_data
 
@@ -427,10 +399,7 @@ def handle_trigger():
         return jsonify(error_response), 500
 
     try:
-        # Perform the inspection
-        result = qc.inspect_tag() # Returns the detailed dict including display info
-
-        # Prepare the final JSON response
+        result = qc.inspect_tag()
         response_data = {
             "status": result.get("status", "Error"),
             "class": result.get("class", ""),
@@ -443,14 +412,12 @@ def handle_trigger():
         img_display = result.get("image_data")
         display_text = result.get("display_text", "Error")
         display_color = result.get("display_color", ERROR_COLOR)
-        window_title = f"API Result: {display_text}" # Simpler title for API
+        window_title = f"API Result: {display_text}"
 
         if img_display is not None:
-            # Clear previous item if queue is full
             if display_queue.full():
                 try: display_queue.get_nowait()
                 except Empty: pass
-            # Put new item: (title, text, color, image)
             try:
                  display_queue.put_nowait((window_title, display_text, display_color, img_display))
                  print("Display info put on queue.")
@@ -491,7 +458,7 @@ if __name__ == "__main__":
 
     quit_flag = False
     live_window_name = "Live View (Zoomed + Rotated Box)"
-    result_window_name = "Last Inspection Result" # Simplified name
+    result_window_name = "Last Inspection Result"
     result_window_created = False
     flask_thread = None
 
@@ -550,13 +517,11 @@ if __name__ == "__main__":
 
             # --- Check Display Queue from Flask ---
             try:
-                # Check queue without blocking
                 title, text, color, img = display_queue.get_nowait()
                 print(f"Displaying result from API request: {title}")
                 if img is not None and img.size > 0:
                     try:
-                        # Draw text overlay before showing
-                        img_to_show = img.copy() # Draw on a copy
+                        img_to_show = img.copy()
                         cv2.putText(img_to_show, text, TEXT_ORG, TEXT_FONT, TEXT_SCALE, color, TEXT_THICKNESS, cv2.LINE_AA)
                         cv2.imshow(result_window_name, img_to_show)
                         cv2.setWindowTitle(result_window_name, title)
@@ -566,7 +531,7 @@ if __name__ == "__main__":
                 else:
                      print("Queued image data was None or empty.")
                      if result_window_created:
-                          try: # Try to clear window with placeholder
+                          try:
                                placeholder = np.zeros((100, 400, 3), dtype=np.uint8)
                                cv2.putText(placeholder, "No Image Data", (10, 30), TEXT_FONT, 0.5, (255, 255, 255), 1)
                                cv2.putText(placeholder, title, (10, 70), TEXT_FONT, 0.4, (255, 255, 255), 1)
@@ -576,7 +541,7 @@ if __name__ == "__main__":
                           except Exception as placeholder_e: print(f"Error displaying placeholder: {placeholder_e}")
 
             except Empty:
-                pass # No update from Flask thread
+                pass
             except Exception as q_err:
                 print(f"Error checking display queue: {q_err}")
             # --- End Display Queue Check ---
@@ -591,13 +556,11 @@ if __name__ == "__main__":
             elif key == 13:
                 print("\nEnter key pressed, performing manual inspection...")
                 if qc:
-                    result = qc.inspect_tag() # Handles capture, zoom, detect, crop, inference
-                    img_display = result.get("image_data") # This is cropped or zoomed
+                    result = qc.inspect_tag()
+                    img_display = result.get("image_data")
                     display_text = result.get("display_text", "Error")
                     display_color = result.get("display_color", ERROR_COLOR)
-                    window_title = result_window_name # Base title
-
-                    # Determine title based on success, failure, or error
+                    window_title = result_window_name
                     status = result.get("status")
                     cls = result.get("class", "")
                     conf = result.get("confidence", 0.0)
@@ -606,18 +569,16 @@ if __name__ == "__main__":
                     if status == "Success":
                          print(f"Manual, Result - class: {cls} confidence: {conf:.2f}")
                          window_title = f"Manual: {display_text} ({conf:.2f})"
-                    elif status == "Failed": # Detection failed, used zoomed
+                    elif status == "Failed":
                          print(f"Manual, Warning: {err_msg}. Inference on zoomed. Class: {cls}, Conf: {conf:.2f}")
                          window_title = f"Manual: {display_text}"
-                    else: # Error status
+                    else:
                          print(f"Manual, Inspection Error: {err_msg or 'Unknown Critical Error'}")
                          window_title = f"Manual: {display_text}"
 
 
-                    # Display the result image (cropped or zoomed fallback)
                     if img_display is not None and img_display.size > 0:
                          try:
-                              # Draw text overlay before showing
                               img_to_show = img_display.copy()
                               cv2.putText(img_to_show, display_text, TEXT_ORG, TEXT_FONT, TEXT_SCALE, display_color, TEXT_THICKNESS, cv2.LINE_AA)
                               cv2.imshow(result_window_name, img_to_show)
@@ -631,7 +592,7 @@ if __name__ == "__main__":
                     else:
                          print("No image data available to display for manual result.")
                          if result_window_created:
-                              try: # Try to clear window with placeholder
+                              try:
                                    placeholder = np.zeros((100, 400, 3), dtype=np.uint8)
                                    cv2.putText(placeholder, "No Image Data", (10, 30), TEXT_FONT, 0.5, (255, 255, 255), 1)
                                    cv2.putText(placeholder, window_title, (10, 70), TEXT_FONT, 0.4, (255, 255, 255), 1)
