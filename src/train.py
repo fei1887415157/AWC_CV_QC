@@ -55,7 +55,7 @@ if __name__ == '__main__':
 	results = model.train(data="../dataset",
 	                      pretrained=True,
 	                      epochs=1000,
-	                      patience=200,
+	                      patience=50,
 		# training must use square image size, stride of 32
 	    # rect=True enables auto padding
 		# inference can use other aspect ratio
@@ -64,9 +64,8 @@ if __name__ == '__main__':
 	                      cos_lr=True,        # Cosine Annealing, learning rate schedule
 						  workers=7,          # CPU intensive, number means number of cores
 	                      # use small batch size, less overfit
-	                      batch=2,            # GPU VRAM / RAM intensive
+	                      batch=1,            # GPU VRAM / RAM intensive
 	                      #auto_augment="autoaugment",
-	                      augment=True,
 	                      degrees=180,
 	                      shear=20,
 	                      perspective=0.001,
